@@ -1,0 +1,14 @@
+:root {
+  font-family: Geist, "Avenir Next", "Segoe UI", sans-serif;
+  color: #f4f5f7;
+  background: #07588d;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100dvh; }
+button, input, textarea { font-family: inherit; }
