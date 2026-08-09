@@ -1,14 +1,23 @@
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/AnthropicSerif-Text-Medium-Static.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  font-family: Geist, "Avenir Next", "Segoe UI", sans-serif;
-  color: #f4f5f7;
-  background: #07588d;
+  font-family: "Anthropic Serif", Georgia, serif;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: #24221d;
+  background: #f3ead7;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; font-weight: 500; }
 html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
-body { min-height: 100dvh; }
-button, input, textarea { font-family: inherit; }
+button, input, textarea { font-family: inherit; letter-spacing: inherit; }
