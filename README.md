@@ -31,6 +31,7 @@ mcp_servers:
 ```
 
 Restart Hermes, then ask it to inspect or change the organizer. Hermes registers these as `mcp_lazy_organizer_<tool>` and can manage task metadata and recurrence, move and delete tasks, manage checklists, link tasks to events or notebooks, manage recurring calendar events and deadlines, add comments, and manage notebooks.
+S
 
 ## Verify
 
