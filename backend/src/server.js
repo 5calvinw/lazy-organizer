@@ -110,6 +110,32 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = 'image
     COMMIT;
   `)
 }
+for (const [column, definition] of [['file_name', 'TEXT'], ['file_mime_type', 'TEXT'], ['file_data', 'TEXT'], ['file_size', 'INTEGER']]) {
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = ?").get(column)) {
+    db.exec(`ALTER TABLE comments ADD COLUMN ${column} ${definition}`)
+  }
+}
+if (!db.prepare("SELECT 1 FROM pragma_table_info('event_comments') WHERE name = 'image'").get()) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE event_comments_with_attachments (
+      id INTEGER PRIMARY KEY,
+      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      body TEXT NOT NULL DEFAULT '',
+      image TEXT,
+      file_name TEXT,
+      file_mime_type TEXT,
+      file_data TEXT,
+      file_size INTEGER,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO event_comments_with_attachments (id, event_id, body, created_at)
+      SELECT id, event_id, body, created_at FROM event_comments;
+    DROP TABLE event_comments;
+    ALTER TABLE event_comments_with_attachments RENAME TO event_comments;
+    COMMIT;
+  `)
+}
 db.exec(`
   CREATE TABLE IF NOT EXISTS checklist_items (
     id INTEGER PRIMARY KEY,
@@ -282,14 +308,36 @@ const eventSelect = `SELECT id, title, description, event_date, event_time, end_
 function cardDetail(cardId) {
   const card = db.prepare(`${cardSelect} WHERE c.id = ?`).get(cardId)
   if (!card) return null
-  const comments = db.prepare('SELECT id, body, image, created_at FROM comments WHERE card_id = ? ORDER BY id DESC').all(cardId)
+  const comments = db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM comments WHERE card_id = ? ORDER BY id DESC').all(cardId)
   const checklist = db.prepare('SELECT id, title, completed, position, created_at FROM checklist_items WHERE card_id = ? ORDER BY position, id').all(cardId)
   const attachments = db.prepare('SELECT id, name, mime_type, data, size, created_at FROM card_attachments WHERE card_id = ? ORDER BY id DESC').all(cardId)
   const events = db.prepare(`SELECT e.id, e.title, e.event_date, e.event_time, e.is_deadline
     FROM card_event_links l JOIN events e ON e.id = l.event_id WHERE l.card_id = ? ORDER BY e.event_date, e.event_time`).all(cardId)
   const notebooks = db.prepare(`SELECT n.id, n.title FROM card_notebook_links l
     JOIN notebooks n ON n.id = l.notebook_id WHERE l.card_id = ? ORDER BY n.title`).all(cardId)
-  return { ...card, comments, checklist, attachments, links: { events, notebooks } }
+  const mentioned = new Set(Array.from(card.description.matchAll(/\$\[(event|notebook):(\d+)\]/g), (match) => `${match[1]}:${match[2]}`))
+  const inheritedMentions = [
+    ...notebooks.filter((item) => !mentioned.has(`notebook:${item.id}`)).map((item) => `$[notebook:${item.id}]`),
+    ...events.filter((item) => !(item.is_deadline && item.event_date === card.due_date) && !mentioned.has(`event:${item.id}`)).map((item) => `$[event:${item.id}]`),
+    ...(checklist.length && !/^!checklist$/m.test(card.description) ? ['!checklist'] : []),
+  ]
+  const description = [card.description, ...inheritedMentions].filter(Boolean).join(card.description ? '\n' : '')
+  return { ...card, description, comments, checklist, attachments, links: { events, notebooks } }
+}
+
+function syncCardDescriptionLinks(cardId, description, dueDate) {
+  const mentions = Array.from(description.matchAll(/\$\[(event|notebook):(\d+)\]/g))
+  const eventIds = new Set(mentions.filter((match) => match[1] === 'event').map((match) => Number(match[2])))
+  const notebookIds = new Set(mentions.filter((match) => match[1] === 'notebook').map((match) => Number(match[2])))
+  const insertEvent = db.prepare('INSERT OR IGNORE INTO card_event_links (card_id, event_id) SELECT ?, id FROM events WHERE id = ?')
+  const insertNotebook = db.prepare('INSERT OR IGNORE INTO card_notebook_links (card_id, notebook_id) SELECT ?, id FROM notebooks WHERE id = ?')
+  eventIds.forEach((id) => insertEvent.run(cardId, id))
+  notebookIds.forEach((id) => insertNotebook.run(cardId, id))
+  db.prepare(`DELETE FROM card_event_links WHERE card_id = ? AND event_id NOT IN (${eventIds.size ? Array.from(eventIds).map(() => '?').join(', ') : 'NULL'})
+    AND event_id NOT IN (SELECT id FROM events WHERE is_deadline = 1 AND event_date = ?)`)
+    .run(cardId, ...eventIds, dueDate)
+  db.prepare(`DELETE FROM card_notebook_links WHERE card_id = ? AND notebook_id NOT IN (${notebookIds.size ? Array.from(notebookIds).map(() => '?').join(', ') : 'NULL'})`)
+    .run(cardId, ...notebookIds)
 }
 
 function completeRecurringCard(card, destinationListId) {
@@ -310,6 +358,34 @@ function completeRecurringCard(card, destinationListId) {
     .forEach((item) => addChecklist.run(nextId, item.title, item.position))
   db.prepare('INSERT INTO card_event_links (card_id, event_id) SELECT ?, event_id FROM card_event_links WHERE card_id = ?').run(nextId, card.id)
   db.prepare('INSERT INTO card_notebook_links (card_id, notebook_id) SELECT ?, notebook_id FROM card_notebook_links WHERE card_id = ?').run(nextId, card.id)
+}
+
+function syncCardDeadline({ cardId, title, description, color, dueDate, recurrence, recurrenceInterval }) {
+  const deadlines = db.prepare(`SELECT e.id, e.event_time, e.color, e.recurrence_parent_id
+    FROM card_event_links l JOIN events e ON e.id = l.event_id
+    WHERE l.card_id = ? AND e.is_deadline = 1
+    ORDER BY e.recurrence_parent_id IS NOT NULL, e.id`).all(cardId)
+
+  if (dueDate === null) {
+    deadlines.forEach((deadline) => db.prepare('DELETE FROM events WHERE id = ?').run(deadline.id))
+    return
+  }
+
+  const existing = deadlines[0]
+  const eventTime = existing?.event_time ?? '09:00'
+  if (existing) {
+    if (existing.recurrence_parent_id === null) db.prepare('DELETE FROM events WHERE recurrence_parent_id = ?').run(existing.id)
+    db.prepare(`UPDATE events SET title = ?, description = ?, event_date = ?, event_time = ?, end_time = ?,
+      is_deadline = 1, color = ?, recurrence = ?, recurrence_interval = ? WHERE id = ?`)
+      .run(title, description, dueDate, eventTime, eventTime, color, recurrence, recurrenceInterval, existing.id)
+    return
+  }
+
+  const created = db.prepare(`INSERT INTO events
+    (title, description, event_date, event_time, end_time, is_deadline, color, recurrence, recurrence_interval)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`)
+    .run(title, description, dueDate, eventTime, eventTime, color, recurrence, recurrenceInterval)
+  db.prepare('INSERT INTO card_event_links (card_id, event_id) VALUES (?, ?)').run(cardId, created.lastInsertRowid)
 }
 
 app.get('/api/health', (_request, response) => response.json({ ok: true }))
@@ -405,7 +481,7 @@ app.get('/api/deadlines', (_request, response) => {
 app.get('/api/events/:id', (request, response) => {
   const event = db.prepare(`${eventSelect} WHERE id = ?`).get(request.params.id)
   if (!event) return response.status(404).json({ error: 'event not found' })
-  const comments = db.prepare('SELECT id, body, created_at FROM event_comments WHERE event_id = ? ORDER BY id DESC').all(event.id)
+  const comments = db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM event_comments WHERE event_id = ? ORDER BY id DESC').all(event.id)
   const notebooks = db.prepare(`SELECT n.id, n.title FROM event_notebook_links l JOIN notebooks n ON n.id = l.notebook_id
     WHERE l.event_id = ? ORDER BY n.title`).all(event.id)
   response.json({ ...event, comments, notebooks })
@@ -484,10 +560,23 @@ app.delete('/api/events/:id', (request, response) => {
 
 app.post('/api/events/:id/comments', (request, response) => {
   const body = typeof request.body.body === 'string' ? request.body.body.trim() : ''
-  if (!body) return response.status(400).json({ error: 'comment is required' })
+  const image = typeof request.body.image === 'string' && /^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.image) ? request.body.image : null
+  const fileName = typeof request.body.fileName === 'string' ? request.body.fileName.replace(/[\\/\r\n]/g, ' ').trim().slice(0, 255) : null
+  const fileMimeType = typeof request.body.fileMimeType === 'string' ? request.body.fileMimeType.trim().slice(0, 255) : null
+  const fileData = typeof request.body.fileData === 'string' && /^data:[^;]+;base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.fileData) ? request.body.fileData : null
+  const fileSize = request.body.fileSize === undefined || request.body.fileSize === null ? null : Number(request.body.fileSize)
+  const hasFileFields = [request.body.fileName, request.body.fileMimeType, request.body.fileData, request.body.fileSize].some((value) => value !== undefined && value !== null && value !== '')
+  if (!body && !image && !fileData) return response.status(400).json({ error: 'comment or attachment is required' })
+  if (typeof request.body.image === 'string' && !image) return response.status(400).json({ error: 'valid image is required' })
+  if (hasFileFields && (!fileName || !fileMimeType || !fileData || !Number.isInteger(fileSize) || fileSize < 0)) return response.status(400).json({ error: 'valid file attachment is required' })
+  if (fileData && Buffer.byteLength(fileData, 'utf8') > 7_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
+  if (fileSize !== null && fileSize > 5_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
+  if (image && Buffer.byteLength(image, 'utf8') > 7_000_000) return response.status(413).json({ error: 'image must be 5 MB or smaller' })
   if (!db.prepare('SELECT 1 FROM events WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'event not found' })
-  const result = db.prepare('INSERT INTO event_comments (event_id, body) VALUES (?, ?)').run(request.params.id, body)
-  response.status(201).json(db.prepare('SELECT id, body, created_at FROM event_comments WHERE id = ?').get(result.lastInsertRowid))
+  const result = db.prepare(`INSERT INTO event_comments
+    (event_id, body, image, file_name, file_mime_type, file_data, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(request.params.id, body, image, fileName, fileMimeType, fileData, fileSize)
+  response.status(201).json(db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM event_comments WHERE id = ?').get(result.lastInsertRowid))
 })
 app.post('/api/events/:id/notebook-links', (request, response) => {
   const notebookId = Number(request.body.notebookId)
@@ -542,11 +631,27 @@ app.patch('/api/cards/:id', (request, response) => {
   if (recurrenceInterval !== null && (!Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365)) return response.status(400).json({ error: 'valid recurrence interval is required' })
   const nextRecurrence = recurrence ?? current.recurrence
   const nextDueDate = dueDate === undefined ? current.due_date : dueDate
+  const nextTitle = title ?? current.title
+  const nextDescription = description ?? current.description
+  const nextColor = color ?? current.color
+  const nextRecurrenceInterval = recurrenceInterval ?? current.recurrence_interval
   if (nextRecurrence !== 'none' && !nextDueDate) return response.status(400).json({ error: 'recurring tasks need a due date' })
-  db.prepare(`UPDATE cards SET title = COALESCE(?, title), description = COALESCE(?, description), color = COALESCE(?, color),
-    due_date = ?, priority = COALESCE(?, priority), recurrence = COALESCE(?, recurrence),
-    recurrence_interval = COALESCE(?, recurrence_interval) WHERE id = ?`)
-    .run(title, description, color, nextDueDate, priority, recurrence, recurrenceInterval, current.id)
+  db.exec('BEGIN')
+  try {
+    db.prepare(`UPDATE cards SET title = COALESCE(?, title), description = COALESCE(?, description), color = COALESCE(?, color),
+      due_date = ?, priority = COALESCE(?, priority), recurrence = COALESCE(?, recurrence),
+      recurrence_interval = COALESCE(?, recurrence_interval) WHERE id = ?`)
+      .run(title, description, color, nextDueDate, priority, recurrence, recurrenceInterval, current.id)
+    if (description !== null) {
+      syncCardDescriptionLinks(current.id, description, nextDueDate)
+      if (!/^!checklist$/m.test(description)) db.prepare('DELETE FROM checklist_items WHERE card_id = ?').run(current.id)
+    }
+    syncCardDeadline({ cardId: current.id, title: nextTitle, description: nextDescription, color: nextColor, dueDate: nextDueDate, recurrence: nextRecurrence, recurrenceInterval: nextRecurrenceInterval })
+    db.exec('COMMIT')
+  } catch (cause) {
+    db.exec('ROLLBACK')
+    throw cause
+  }
   response.json(db.prepare(`${cardSelect} WHERE c.id = ?`).get(current.id))
 })
 
@@ -584,14 +689,24 @@ app.patch('/api/cards/:id/move', (request, response) => {
 app.post('/api/cards/:id/comments', (request, response) => {
   const body = typeof request.body.body === 'string' ? request.body.body.trim() : ''
   const image = typeof request.body.image === 'string' && /^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.image) ? request.body.image : null
-  if (!body && !image) return response.status(400).json({ error: 'comment or image is required' })
+  const fileName = typeof request.body.fileName === 'string' ? request.body.fileName.replace(/[\\/\r\n]/g, ' ').trim().slice(0, 255) : null
+  const fileMimeType = typeof request.body.fileMimeType === 'string' ? request.body.fileMimeType.trim().slice(0, 255) : null
+  const fileData = typeof request.body.fileData === 'string' && /^data:[^;]+;base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.fileData) ? request.body.fileData : null
+  const fileSize = request.body.fileSize === undefined || request.body.fileSize === null ? null : Number(request.body.fileSize)
+  const hasFileFields = [request.body.fileName, request.body.fileMimeType, request.body.fileData, request.body.fileSize].some((value) => value !== undefined && value !== null && value !== '')
+  if (!body && !image && !fileData) return response.status(400).json({ error: 'comment or attachment is required' })
   if (typeof request.body.image === 'string' && !image) return response.status(400).json({ error: 'valid image is required' })
+  if (hasFileFields && (!fileName || !fileMimeType || !fileData || !Number.isInteger(fileSize) || fileSize < 0)) return response.status(400).json({ error: 'valid file attachment is required' })
+  if (fileData && Buffer.byteLength(fileData, 'utf8') > 7_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
+  if (fileSize !== null && fileSize > 5_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
   if (image && Buffer.byteLength(image, 'utf8') > 7_000_000) return response.status(413).json({ error: 'image must be 5 MB or smaller' })
   if (!db.prepare('SELECT 1 FROM cards WHERE id = ?').get(request.params.id)) {
     return response.status(404).json({ error: 'card not found' })
   }
-  const result = db.prepare('INSERT INTO comments (card_id, body, image) VALUES (?, ?, ?)').run(request.params.id, body, image)
-  response.status(201).json(db.prepare('SELECT id, body, image, created_at FROM comments WHERE id = ?').get(result.lastInsertRowid))
+  const result = db.prepare(`INSERT INTO comments
+    (card_id, body, image, file_name, file_mime_type, file_data, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(request.params.id, body, image, fileName, fileMimeType, fileData, fileSize)
+  response.status(201).json(db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM comments WHERE id = ?').get(result.lastInsertRowid))
 })
 app.post('/api/cards/:id/checklist', (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
@@ -639,8 +754,22 @@ app.post('/api/checklist/:id/convert', (request, response) => {
 })
 
 app.delete('/api/checklist/:id', (request, response) => {
-  const result = db.prepare('DELETE FROM checklist_items WHERE id = ?').run(request.params.id)
-  if (!result.changes) return response.status(404).json({ error: 'checklist item not found' })
+  const item = db.prepare('SELECT id, card_id FROM checklist_items WHERE id = ?').get(request.params.id)
+  if (!item) return response.status(404).json({ error: 'checklist item not found' })
+  db.exec('BEGIN')
+  try {
+    db.prepare('DELETE FROM checklist_items WHERE id = ?').run(item.id)
+    const remaining = db.prepare('SELECT 1 FROM checklist_items WHERE card_id = ? LIMIT 1').get(item.card_id)
+    if (!remaining) {
+      const card = db.prepare('SELECT description FROM cards WHERE id = ?').get(item.card_id)
+      const description = card.description.replace(/(^|\n)!checklist(?=\n|$)/g, '$1').replace(/\n{3,}/g, '\n\n').trim()
+      db.prepare('UPDATE cards SET description = ? WHERE id = ?').run(description, item.card_id)
+    }
+    db.exec('COMMIT')
+  } catch (cause) {
+    db.exec('ROLLBACK')
+    throw cause
+  }
   response.json({ ok: true })
 })
 
