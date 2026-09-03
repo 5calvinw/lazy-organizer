@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model List {
+  id       Int    @id @default(autoincrement())
+  title    String
+  position Int
+  cards    Card[]
+
+  @@map("lists")
+}
+
+model Card {
+  id                  Int                @id @default(autoincrement())
+  listId              Int                @map("list_id")
+  title               String
+  description         String             @default("")
+  position            Int
+  createdAt           String             @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  color               String             @default("gray")
+  dueDate             String?            @map("due_date")
+  priority            String             @default("none")
+  recurrence          String             @default("none")
+  recurrenceInterval  Int                @default(1) @map("recurrence_interval")
+  list                List               @relation(fields: [listId], references: [id], onDelete: Cascade)
+  attachments         CardAttachment[]
+  checklist           ChecklistItem[]
+  comments            CardComment[]
+  eventLinks          CardEventLink[]
+  notebookLinks       CardNotebookLink[]
+
+  @@map("cards")
+}
+
+model CardComment {
+  id           Int     @id @default(autoincrement())
+  cardId       Int     @map("card_id")
+  body         String  @default("")
+  image        String?
+  fileName     String? @map("file_name")
+  fileMimeType String? @map("file_mime_type")
+  fileData     String? @map("file_data")
+  fileSize     Int?    @map("file_size")
+  createdAt    String  @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  card         Card    @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@map("comments")
+}
+
+model ChecklistItem {
+  id        Int    @id @default(autoincrement())
+  cardId    Int    @map("card_id")
+  title     String
+  completed Int    @default(0)
+  position  Int
+  createdAt String @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  card      Card   @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@map("checklist_items")
+}
+
+model CardAttachment {
+  id        Int    @id @default(autoincrement())
+  cardId    Int    @map("card_id")
+  name      String
+  mimeType  String @map("mime_type")
+  data      String
+  size      Int
+  createdAt String @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  card      Card   @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@map("card_attachments")
+}
+
+model Event {
+  id                  Int                @id @default(autoincrement())
+  title               String
+  description         String             @default("")
+  eventDate           String             @map("event_date")
+  eventTime           String             @default("09:00") @map("event_time")
+  endTime             String             @default("10:00") @map("end_time")
+  isDeadline          Int                @default(0) @map("is_deadline")
+  color               String             @default("blue")
+  recurrence          String             @default("none")
+  recurrenceInterval  Int                @default(1) @map("recurrence_interval")
+  recurrenceParentId  Int?               @map("recurrence_parent_id")
+  createdAt           String             @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  recurrenceParent    Event?             @relation("EventRecurrence", fields: [recurrenceParentId], references: [id], onDelete: Cascade)
+  occurrences         Event[]            @relation("EventRecurrence")
+  comments            EventComment[]
+  cardLinks           CardEventLink[]
+  notebookLinks       EventNotebookLink[]
+
+  @@unique([recurrenceParentId, eventDate, eventTime], map: "event_recurrence_occurrence")
+  @@map("events")
+}
+
+model EventComment {
+  id           Int     @id @default(autoincrement())
+  eventId      Int     @map("event_id")
+  body         String  @default("")
+  image        String?
+  fileName     String? @map("file_name")
+  fileMimeType String? @map("file_mime_type")
+  fileData     String? @map("file_data")
+  fileSize     Int?    @map("file_size")
+  createdAt    String  @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  event        Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("event_comments")
+}
+
+model Notebook {
+  id             Int                 @id @default(autoincrement())
+  title          String
+  content        String              @default("")
+  images         String              @default("[]")
+  createdAt      String              @default(dbgenerated("CURRENT_TIMESTAMP")) @map("created_at")
+  cardLinks      CardNotebookLink[]
+  eventLinks     EventNotebookLink[]
+
+  @@map("notebooks")
+}
+
+model CardEventLink {
+  cardId  Int   @map("card_id")
+  eventId Int   @map("event_id")
+  card    Card  @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  event   Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@id([cardId, eventId])
+  @@map("card_event_links")
+}
+
+model CardNotebookLink {
+  cardId     Int      @map("card_id")
+  notebookId Int      @map("notebook_id")
+  card       Card     @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  notebook   Notebook @relation(fields: [notebookId], references: [id], onDelete: Cascade)
+
+  @@id([cardId, notebookId])
+  @@map("card_notebook_links")
+}
+
+model EventNotebookLink {
+  eventId    Int      @map("event_id")
+  notebookId Int      @map("notebook_id")
+  event      Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  notebook   Notebook @relation(fields: [notebookId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, notebookId])
+  @@map("event_notebook_links")
+}

@@ -1,189 +1,29 @@
 import express from 'express'
 import { timingSafeEqual } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
-import { DatabaseSync } from 'node:sqlite'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { createOrganizerMcpServer } from './mcp.js'
-
-mkdirSync('data', { recursive: true })
-
-const db = new DatabaseSync('data/organizer.db')
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-
-  CREATE TABLE IF NOT EXISTS lists (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL,
-    position INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS cards (
-    id INTEGER PRIMARY KEY,
-    list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
-    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
-    description TEXT NOT NULL DEFAULT '',
-    position INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS comments (
-    id INTEGER PRIMARY KEY,
-    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    body TEXT NOT NULL CHECK (length(trim(body)) > 0),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
-    description TEXT NOT NULL DEFAULT '',
-    event_date TEXT NOT NULL CHECK (event_date GLOB '????-??-??'),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS event_comments (
-    id INTEGER PRIMARY KEY,
-    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    body TEXT NOT NULL CHECK (length(trim(body)) > 0),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS notebooks (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
-    content TEXT NOT NULL DEFAULT '',
-    images TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-`)
-
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'event_time'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN event_time TEXT NOT NULL DEFAULT '09:00' CHECK (event_time GLOB '??:??')")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'end_time'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN end_time TEXT NOT NULL DEFAULT '10:00' CHECK (end_time GLOB '??:??')")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'is_deadline'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN is_deadline INTEGER NOT NULL DEFAULT 0 CHECK (is_deadline IN (0, 1))")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'color'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN color TEXT NOT NULL DEFAULT 'blue'")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'color'").get()) {
-  db.exec("ALTER TABLE cards ADD COLUMN color TEXT NOT NULL DEFAULT 'gray'")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'due_date'").get()) {
-  db.exec("ALTER TABLE cards ADD COLUMN due_date TEXT")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'priority'").get()) {
-  db.exec("ALTER TABLE cards ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'recurrence'").get()) {
-  db.exec("ALTER TABLE cards ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none'")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'recurrence_interval'").get()) {
-  db.exec("ALTER TABLE cards ADD COLUMN recurrence_interval INTEGER NOT NULL DEFAULT 1")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'recurrence'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none'")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'recurrence_interval'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN recurrence_interval INTEGER NOT NULL DEFAULT 1")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'recurrence_parent_id'").get()) {
-  db.exec("ALTER TABLE events ADD COLUMN recurrence_parent_id INTEGER REFERENCES events(id) ON DELETE CASCADE")
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = 'image'").get()) {
-  db.exec(`
-    BEGIN;
-    CREATE TABLE comments_with_images (
-      id INTEGER PRIMARY KEY,
-      card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-      body TEXT NOT NULL DEFAULT '',
-      image TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    INSERT INTO comments_with_images (id, card_id, body, created_at) SELECT id, card_id, body, created_at FROM comments;
-    DROP TABLE comments;
-    ALTER TABLE comments_with_images RENAME TO comments;
-    COMMIT;
-  `)
-}
-for (const [column, definition] of [['file_name', 'TEXT'], ['file_mime_type', 'TEXT'], ['file_data', 'TEXT'], ['file_size', 'INTEGER']]) {
-  if (!db.prepare("SELECT 1 FROM pragma_table_info('comments') WHERE name = ?").get(column)) {
-    db.exec(`ALTER TABLE comments ADD COLUMN ${column} ${definition}`)
-  }
-}
-if (!db.prepare("SELECT 1 FROM pragma_table_info('event_comments') WHERE name = 'image'").get()) {
-  db.exec(`
-    BEGIN;
-    CREATE TABLE event_comments_with_attachments (
-      id INTEGER PRIMARY KEY,
-      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-      body TEXT NOT NULL DEFAULT '',
-      image TEXT,
-      file_name TEXT,
-      file_mime_type TEXT,
-      file_data TEXT,
-      file_size INTEGER,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    INSERT INTO event_comments_with_attachments (id, event_id, body, created_at)
-      SELECT id, event_id, body, created_at FROM event_comments;
-    DROP TABLE event_comments;
-    ALTER TABLE event_comments_with_attachments RENAME TO event_comments;
-    COMMIT;
-  `)
-}
-db.exec(`
-  CREATE TABLE IF NOT EXISTS checklist_items (
-    id INTEGER PRIMARY KEY,
-    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
-    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
-    position INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS card_attachments (
-    id INTEGER PRIMARY KEY,
-    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
-    mime_type TEXT NOT NULL,
-    data TEXT NOT NULL,
-    size INTEGER NOT NULL CHECK (size >= 0),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS card_event_links (
-    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    PRIMARY KEY (card_id, event_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS card_notebook_links (
-    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-    PRIMARY KEY (card_id, notebook_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS event_notebook_links (
-    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
-    PRIMARY KEY (event_id, notebook_id)
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS event_recurrence_occurrence
-    ON events(recurrence_parent_id, event_date, event_time)
-    WHERE recurrence_parent_id IS NOT NULL;
-`)
+import {
+  attachmentJson,
+  cardInclude,
+  cardJson,
+  checklistJson,
+  commentJson,
+  ensureRecurringEvents,
+  eventJson,
+  getCardSummary,
+  moveCard,
+  nextCardPosition,
+  nextChecklistPosition,
+  notebookJson,
+  prisma,
+} from './store.js'
 
 const organizerColors = ['blue', 'green', 'yellow', 'purple', 'orange', 'gray']
 const priorities = ['none', 'low', 'medium', 'high']
 const recurrences = ['none', 'daily', 'weekdays', 'weekly', 'monthly']
 const datePattern = /^\d{4}-\d{2}-\d{2}$/
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/
+const idFrom = (value) => Number(value)
 
 function validDate(value) {
   if (!datePattern.test(value)) return false
@@ -191,50 +31,10 @@ function validDate(value) {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value
 }
 
-function nextOccurrence(value, recurrence, interval = 1) {
-  const date = new Date(`${value}T00:00:00Z`)
-  if (recurrence === 'daily') date.setUTCDate(date.getUTCDate() + interval)
-  else if (recurrence === 'weekly') date.setUTCDate(date.getUTCDate() + (7 * interval))
-  else if (recurrence === 'weekdays') {
-    let remaining = interval
-    while (remaining > 0) {
-      date.setUTCDate(date.getUTCDate() + 1)
-      if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) remaining -= 1
-    }
-  } else if (recurrence === 'monthly') {
-    const day = date.getUTCDate()
-    const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + interval, 1))
-    const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate()
-    target.setUTCDate(Math.min(day, lastDay))
-    return target.toISOString().slice(0, 10)
-  } else return null
-  return date.toISOString().slice(0, 10)
-}
-
-function ensureRecurringEvents(endDate) {
-  const roots = db.prepare("SELECT * FROM events WHERE recurrence != 'none' AND recurrence_parent_id IS NULL").all()
-  const latest = db.prepare('SELECT MAX(event_date) AS event_date FROM events WHERE id = ? OR recurrence_parent_id = ?')
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO events
-      (title, description, event_date, event_time, end_time, is_deadline, color, recurrence, recurrence_interval, recurrence_parent_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'none', 1, ?)
-  `)
-  for (const root of roots) {
-    let occurrenceDate = latest.get(root.id, root.id).event_date
-    while (occurrenceDate < endDate) {
-      occurrenceDate = nextOccurrence(occurrenceDate, root.recurrence, root.recurrence_interval)
-      if (!occurrenceDate || occurrenceDate > endDate) break
-      insert.run(root.title, root.description, occurrenceDate, root.event_time, root.end_time, root.is_deadline, root.color, root.id)
-    }
-  }
-}
-
-
-if (db.prepare('SELECT COUNT(*) AS count FROM lists').get().count === 0) {
-  db.exec('BEGIN')
-    const addList = db.prepare('INSERT INTO lists (title, position) VALUES (?, ?)')
-    const addCard = db.prepare('INSERT INTO cards (list_id, title, position) VALUES (?, ?, ?)')
-    const lists = [
+async function seedDefaultBoard() {
+  await prisma.$transaction(async (tx) => {
+    if (await tx.list.count()) return
+    const defaults = [
       ['Backlog', [
         'is the employee form for creating and deleting different?',
         'its better to have the field, view and form framework standardize, later you can reuse for other view and form too',
@@ -247,18 +47,118 @@ if (db.prepare('SELECT COUNT(*) AS count FROM lists').get().count === 0) {
       ['Doing', []],
       ['Done', []],
     ]
-
-  try {
-    lists.forEach(([title, cards], listIndex) => {
-      const listId = addList.run(title, listIndex).lastInsertRowid
-      cards.forEach((cardTitle, cardIndex) => addCard.run(listId, cardTitle, cardIndex))
-    })
-    db.exec('COMMIT')
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
+    for (const [title, cards] of defaults) {
+      await tx.list.create({
+        data: {
+          title,
+          position: defaults.findIndex(([candidate]) => candidate === title),
+          cards: { create: cards.map((cardTitle, position) => ({ title: cardTitle, position })) },
+        },
+      })
+    }
+  })
 }
+
+async function cardDetail(cardId) {
+  const card = await prisma.card.findUnique({
+    where: { id: cardId },
+    include: {
+      ...cardInclude,
+      comments: { orderBy: { id: 'desc' } },
+      checklist: { orderBy: [{ position: 'asc' }, { id: 'asc' }] },
+      attachments: { orderBy: { id: 'desc' } },
+      eventLinks: {
+        orderBy: [{ event: { eventDate: 'asc' } }, { event: { eventTime: 'asc' } }],
+        include: { event: { select: { id: true, title: true, eventDate: true, eventTime: true, isDeadline: true } } },
+      },
+      notebookLinks: {
+        orderBy: { notebook: { title: 'asc' } },
+        include: { notebook: { select: { id: true, title: true } } },
+      },
+    },
+  })
+  if (!card) return null
+  const comments = card.comments.map(commentJson)
+  const checklist = card.checklist.map((item) => checklistJson(item))
+  const attachments = card.attachments.map((item) => attachmentJson(item))
+  const events = card.eventLinks.map(({ event }) => ({
+    id: event.id,
+    title: event.title,
+    event_date: event.eventDate,
+    event_time: event.eventTime,
+    is_deadline: event.isDeadline,
+  }))
+  const notebooks = card.notebookLinks.map(({ notebook }) => notebook)
+  const mentioned = new Set(Array.from(card.description.matchAll(/\$\[(event|notebook):(\d+)\]/g), (match) => `${match[1]}:${match[2]}`))
+  const inheritedMentions = [
+    ...notebooks.filter((item) => !mentioned.has(`notebook:${item.id}`)).map((item) => `$[notebook:${item.id}]`),
+    ...events.filter((item) => !(item.is_deadline && item.event_date === card.dueDate) && !mentioned.has(`event:${item.id}`)).map((item) => `$[event:${item.id}]`),
+    ...(checklist.length && !/^!checklist$/m.test(card.description) ? ['!checklist'] : []),
+  ]
+  const description = [card.description, ...inheritedMentions].filter(Boolean).join(card.description ? '\n' : '')
+  return { ...cardJson(card), description, comments, checklist, attachments, links: { events, notebooks } }
+}
+
+async function syncCardDescriptionLinks(tx, cardId, description, dueDate) {
+  const mentions = Array.from(description.matchAll(/\$\[(event|notebook):(\d+)\]/g))
+  const eventIds = [...new Set(mentions.filter((match) => match[1] === 'event').map((match) => Number(match[2])))]
+  const notebookIds = [...new Set(mentions.filter((match) => match[1] === 'notebook').map((match) => Number(match[2])))]
+  const [events, notebooks] = await Promise.all([
+    tx.event.findMany({ where: { id: { in: eventIds } }, select: { id: true } }),
+    tx.notebook.findMany({ where: { id: { in: notebookIds } }, select: { id: true } }),
+  ])
+  await Promise.all([
+    ...events.map(({ id }) => tx.cardEventLink.upsert({ where: { cardId_eventId: { cardId, eventId: id } }, update: {}, create: { cardId, eventId: id } })),
+    ...notebooks.map(({ id }) => tx.cardNotebookLink.upsert({ where: { cardId_notebookId: { cardId, notebookId: id } }, update: {}, create: { cardId, notebookId: id } })),
+  ])
+  await Promise.all([
+    tx.cardEventLink.deleteMany({
+      where: {
+        cardId,
+        eventId: { notIn: eventIds },
+        ...(dueDate !== null && { event: { NOT: { isDeadline: 1, eventDate: dueDate } } }),
+      },
+    }),
+    tx.cardNotebookLink.deleteMany({ where: { cardId, notebookId: { notIn: notebookIds } } }),
+  ])
+}
+
+async function syncCardDeadline(tx, { cardId, title, description, color, dueDate, recurrence, recurrenceInterval }) {
+  const deadlines = await tx.event.findMany({
+    where: { cardLinks: { some: { cardId } }, isDeadline: 1 },
+    orderBy: [{ recurrenceParentId: 'asc' }, { id: 'asc' }],
+  })
+  if (dueDate === null) {
+    await tx.event.deleteMany({ where: { id: { in: deadlines.map(({ id }) => id) } } })
+    return
+  }
+  const existing = deadlines[0]
+  const eventTime = existing?.eventTime ?? '09:00'
+  if (existing) {
+    if (existing.recurrenceParentId === null) await tx.event.deleteMany({ where: { recurrenceParentId: existing.id } })
+    await tx.event.update({
+      where: { id: existing.id },
+      data: { title, description, eventDate: dueDate, eventTime, endTime: eventTime, isDeadline: 1, color, recurrence, recurrenceInterval },
+    })
+    return
+  }
+  await tx.event.create({
+    data: {
+      title,
+      description,
+      eventDate: dueDate,
+      eventTime,
+      endTime: eventTime,
+      isDeadline: 1,
+      color,
+      recurrence,
+      recurrenceInterval,
+      cardLinks: { create: { cardId } },
+    },
+  })
+}
+
+await seedDefaultBoard()
 
 const app = express()
 app.use(express.json({ limit: '10mb' }))
@@ -276,7 +176,7 @@ app.use('/mcp', (request, response, next) => {
 })
 
 app.post('/mcp', async (request, response) => {
-  const mcpServer = createOrganizerMcpServer(db)
+  const mcpServer = createOrganizerMcpServer(prisma)
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   response.on('close', () => {
     void transport.close()
@@ -293,174 +193,98 @@ app.post('/mcp', async (request, response) => {
 
 app.all('/mcp', (_request, response) => response.status(405).set('Allow', 'POST').json({ error: 'method not allowed' }))
 
-const cardSelect = `
-  SELECT c.id, c.list_id, c.title, c.description, c.color, c.due_date, c.priority,
-    c.recurrence, c.recurrence_interval, c.created_at, l.title AS list_title,
-    (SELECT COUNT(*) FROM checklist_items ci WHERE ci.card_id = c.id) AS checklist_count,
-    (SELECT COUNT(*) FROM checklist_items ci WHERE ci.card_id = c.id AND ci.completed = 1) AS checklist_completed,
-    (SELECT COUNT(*) FROM card_attachments ca WHERE ca.card_id = c.id) AS attachment_count
-  FROM cards c JOIN lists l ON l.id = c.list_id
-`
-
-const eventSelect = `SELECT id, title, description, event_date, event_time, end_time, is_deadline, color,
-  recurrence, recurrence_interval, recurrence_parent_id, created_at FROM events`
-
-function cardDetail(cardId) {
-  const card = db.prepare(`${cardSelect} WHERE c.id = ?`).get(cardId)
-  if (!card) return null
-  const comments = db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM comments WHERE card_id = ? ORDER BY id DESC').all(cardId)
-  const checklist = db.prepare('SELECT id, title, completed, position, created_at FROM checklist_items WHERE card_id = ? ORDER BY position, id').all(cardId)
-  const attachments = db.prepare('SELECT id, name, mime_type, data, size, created_at FROM card_attachments WHERE card_id = ? ORDER BY id DESC').all(cardId)
-  const events = db.prepare(`SELECT e.id, e.title, e.event_date, e.event_time, e.is_deadline
-    FROM card_event_links l JOIN events e ON e.id = l.event_id WHERE l.card_id = ? ORDER BY e.event_date, e.event_time`).all(cardId)
-  const notebooks = db.prepare(`SELECT n.id, n.title FROM card_notebook_links l
-    JOIN notebooks n ON n.id = l.notebook_id WHERE l.card_id = ? ORDER BY n.title`).all(cardId)
-  const mentioned = new Set(Array.from(card.description.matchAll(/\$\[(event|notebook):(\d+)\]/g), (match) => `${match[1]}:${match[2]}`))
-  const inheritedMentions = [
-    ...notebooks.filter((item) => !mentioned.has(`notebook:${item.id}`)).map((item) => `$[notebook:${item.id}]`),
-    ...events.filter((item) => !(item.is_deadline && item.event_date === card.due_date) && !mentioned.has(`event:${item.id}`)).map((item) => `$[event:${item.id}]`),
-    ...(checklist.length && !/^!checklist$/m.test(card.description) ? ['!checklist'] : []),
-  ]
-  const description = [card.description, ...inheritedMentions].filter(Boolean).join(card.description ? '\n' : '')
-  return { ...card, description, comments, checklist, attachments, links: { events, notebooks } }
-}
-
-function syncCardDescriptionLinks(cardId, description, dueDate) {
-  const mentions = Array.from(description.matchAll(/\$\[(event|notebook):(\d+)\]/g))
-  const eventIds = new Set(mentions.filter((match) => match[1] === 'event').map((match) => Number(match[2])))
-  const notebookIds = new Set(mentions.filter((match) => match[1] === 'notebook').map((match) => Number(match[2])))
-  const insertEvent = db.prepare('INSERT OR IGNORE INTO card_event_links (card_id, event_id) SELECT ?, id FROM events WHERE id = ?')
-  const insertNotebook = db.prepare('INSERT OR IGNORE INTO card_notebook_links (card_id, notebook_id) SELECT ?, id FROM notebooks WHERE id = ?')
-  eventIds.forEach((id) => insertEvent.run(cardId, id))
-  notebookIds.forEach((id) => insertNotebook.run(cardId, id))
-  db.prepare(`DELETE FROM card_event_links WHERE card_id = ? AND event_id NOT IN (${eventIds.size ? Array.from(eventIds).map(() => '?').join(', ') : 'NULL'})
-    AND event_id NOT IN (SELECT id FROM events WHERE is_deadline = 1 AND event_date = ?)`)
-    .run(cardId, ...eventIds, dueDate)
-  db.prepare(`DELETE FROM card_notebook_links WHERE card_id = ? AND notebook_id NOT IN (${notebookIds.size ? Array.from(notebookIds).map(() => '?').join(', ') : 'NULL'})`)
-    .run(cardId, ...notebookIds)
-}
-
-function completeRecurringCard(card, destinationListId) {
-  const destination = db.prepare('SELECT title FROM lists WHERE id = ?').get(destinationListId)
-  const source = db.prepare('SELECT title FROM lists WHERE id = ?').get(card.list_id)
-  if (destination?.title.toLocaleLowerCase() !== 'done' || source?.title.toLocaleLowerCase() === 'done' || card.recurrence === 'none') return
-  const nextDueDate = nextOccurrence(card.due_date, card.recurrence, card.recurrence_interval)
-  if (!nextDueDate) return
-  const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM cards WHERE list_id = ?').get(card.list_id).next
-  const created = db.prepare(`INSERT INTO cards
-    (list_id, title, description, position, color, due_date, priority, recurrence, recurrence_interval)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(card.list_id, card.title, card.description, position, card.color, nextDueDate, card.priority, card.recurrence, card.recurrence_interval)
-  const nextId = created.lastInsertRowid
-  db.prepare('UPDATE cards SET recurrence = \'none\', recurrence_interval = 1 WHERE id = ?').run(card.id)
-  const addChecklist = db.prepare('INSERT INTO checklist_items (card_id, title, position) VALUES (?, ?, ?)')
-  db.prepare('SELECT title, position FROM checklist_items WHERE card_id = ? ORDER BY position, id').all(card.id)
-    .forEach((item) => addChecklist.run(nextId, item.title, item.position))
-  db.prepare('INSERT INTO card_event_links (card_id, event_id) SELECT ?, event_id FROM card_event_links WHERE card_id = ?').run(nextId, card.id)
-  db.prepare('INSERT INTO card_notebook_links (card_id, notebook_id) SELECT ?, notebook_id FROM card_notebook_links WHERE card_id = ?').run(nextId, card.id)
-}
-
-function syncCardDeadline({ cardId, title, description, color, dueDate, recurrence, recurrenceInterval }) {
-  const deadlines = db.prepare(`SELECT e.id, e.event_time, e.color, e.recurrence_parent_id
-    FROM card_event_links l JOIN events e ON e.id = l.event_id
-    WHERE l.card_id = ? AND e.is_deadline = 1
-    ORDER BY e.recurrence_parent_id IS NOT NULL, e.id`).all(cardId)
-
-  if (dueDate === null) {
-    deadlines.forEach((deadline) => db.prepare('DELETE FROM events WHERE id = ?').run(deadline.id))
-    return
-  }
-
-  const existing = deadlines[0]
-  const eventTime = existing?.event_time ?? '09:00'
-  if (existing) {
-    if (existing.recurrence_parent_id === null) db.prepare('DELETE FROM events WHERE recurrence_parent_id = ?').run(existing.id)
-    db.prepare(`UPDATE events SET title = ?, description = ?, event_date = ?, event_time = ?, end_time = ?,
-      is_deadline = 1, color = ?, recurrence = ?, recurrence_interval = ? WHERE id = ?`)
-      .run(title, description, dueDate, eventTime, eventTime, color, recurrence, recurrenceInterval, existing.id)
-    return
-  }
-
-  const created = db.prepare(`INSERT INTO events
-    (title, description, event_date, event_time, end_time, is_deadline, color, recurrence, recurrence_interval)
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`)
-    .run(title, description, dueDate, eventTime, eventTime, color, recurrence, recurrenceInterval)
-  db.prepare('INSERT INTO card_event_links (card_id, event_id) VALUES (?, ?)').run(cardId, created.lastInsertRowid)
-}
-
 app.get('/api/health', (_request, response) => response.json({ ok: true }))
 
-app.get('/api/notebooks', (_request, response) => {
-  response.json(db.prepare('SELECT id, title, content, images, created_at FROM notebooks ORDER BY id DESC').all().map((notebook) => ({ ...notebook, images: JSON.parse(notebook.images) })))
+app.get('/api/notebooks', async (_request, response) => {
+  const notebooks = await prisma.notebook.findMany({ orderBy: { id: 'desc' } })
+  response.json(notebooks.map((notebook) => notebookJson(notebook)))
 })
 
-app.post('/api/notebooks', (request, response) => {
+app.post('/api/notebooks', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   if (!title) return response.status(400).json({ error: 'title is required' })
-  const result = db.prepare('INSERT INTO notebooks (title) VALUES (?)').run(title)
-  response.status(201).json({ ...db.prepare('SELECT id, title, content, images, created_at FROM notebooks WHERE id = ?').get(result.lastInsertRowid), images: [] })
+  const notebook = await prisma.notebook.create({ data: { title } })
+  response.status(201).json(notebookJson(notebook))
 })
 
-app.patch('/api/notebooks/:id', (request, response) => {
-  const notebook = db.prepare('SELECT id FROM notebooks WHERE id = ?').get(request.params.id)
+app.patch('/api/notebooks/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const notebook = Number.isInteger(id) && await prisma.notebook.findUnique({ where: { id }, select: { id: true } })
   if (!notebook) return response.status(404).json({ error: 'notebook not found' })
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : null
   const content = typeof request.body.content === 'string' ? request.body.content : null
   const images = Array.isArray(request.body.images) && request.body.images.every((image) => typeof image === 'string' && image.startsWith('data:image/')) ? JSON.stringify(request.body.images) : null
   if (title === '') return response.status(400).json({ error: 'title is required' })
-  db.prepare('UPDATE notebooks SET title = COALESCE(?, title), content = COALESCE(?, content), images = COALESCE(?, images) WHERE id = ?').run(title, content, images, notebook.id)
-  const updated = db.prepare('SELECT id, title, content, images, created_at FROM notebooks WHERE id = ?').get(notebook.id)
-  response.json({ ...updated, images: JSON.parse(updated.images) })
+  const updated = await prisma.notebook.update({
+    where: { id },
+    data: { ...(title !== null && { title }), ...(content !== null && { content }), ...(images !== null && { images }) },
+  })
+  response.json(notebookJson(updated))
 })
 
-app.delete('/api/notebooks/:id', (request, response) => {
-  const result = db.prepare('DELETE FROM notebooks WHERE id = ?').run(request.params.id)
-  if (!result.changes) return response.status(404).json({ error: 'notebook not found' })
+app.delete('/api/notebooks/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const result = Number.isInteger(id) ? await prisma.notebook.deleteMany({ where: { id } }) : { count: 0 }
+  if (!result.count) return response.status(404).json({ error: 'notebook not found' })
   response.json({ ok: true })
 })
-app.get('/api/notebooks/:id/backlinks', (request, response) => {
-  if (!db.prepare('SELECT 1 FROM notebooks WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'notebook not found' })
-  const cards = db.prepare(`SELECT c.id, c.title, l.title AS list_title FROM card_notebook_links x
-    JOIN cards c ON c.id = x.card_id JOIN lists l ON l.id = c.list_id WHERE x.notebook_id = ? ORDER BY c.title`).all(request.params.id)
-  const events = db.prepare(`SELECT e.id, e.title, e.event_date, e.event_time, e.is_deadline FROM event_notebook_links x
-    JOIN events e ON e.id = x.event_id WHERE x.notebook_id = ? ORDER BY e.event_date, e.event_time`).all(request.params.id)
-  response.json({ cards, events })
-})
 
-app.get('/api/link-options', (_request, response) => {
-  ensureRecurringEvents(new Date(Date.now() + 366 * 86_400_000).toISOString().slice(0, 10))
+app.get('/api/notebooks/:id/backlinks', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const notebook = Number.isInteger(id) && await prisma.notebook.findUnique({
+    where: { id },
+    select: {
+      cardLinks: { orderBy: { card: { title: 'asc' } }, select: { card: { select: { id: true, title: true, list: { select: { title: true } } } } } },
+      eventLinks: { orderBy: [{ event: { eventDate: 'asc' } }, { event: { eventTime: 'asc' } }], select: { event: true } },
+    },
+  })
+  if (!notebook) return response.status(404).json({ error: 'notebook not found' })
   response.json({
-    notebooks: db.prepare('SELECT id, title FROM notebooks ORDER BY title').all(),
-    events: db.prepare(`${eventSelect} WHERE event_date >= date('now', '-30 days') ORDER BY event_date, event_time LIMIT 200`).all(),
+    cards: notebook.cardLinks.map(({ card }) => ({ id: card.id, title: card.title, list_title: card.list.title })),
+    events: notebook.eventLinks.map(({ event }) => ({ id: event.id, title: event.title, event_date: event.eventDate, event_time: event.eventTime, is_deadline: event.isDeadline })),
   })
 })
 
-app.get('/api/today', (_request, response) => {
+app.get('/api/link-options', async (_request, response) => {
+  await ensureRecurringEvents(new Date(Date.now() + 366 * 86_400_000).toISOString().slice(0, 10))
+  const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
+  const [notebooks, events] = await Promise.all([
+    prisma.notebook.findMany({ orderBy: { title: 'asc' }, select: { id: true, title: true } }),
+    prisma.event.findMany({ where: { eventDate: { gte: cutoff } }, orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }], take: 200 }),
+  ])
+  response.json({ notebooks, events: events.map(eventJson) })
+})
+
+app.get('/api/today', async (_request, response) => {
   const today = new Date().toLocaleDateString('en-CA')
-  ensureRecurringEvents(today)
-  const taskFields = `${cardSelect}`
-  const unfinished = "lower(l.title) != 'done'"
-  response.json({
-    date: today,
-    overdue: db.prepare(`${taskFields} WHERE c.due_date < ? AND ${unfinished} ORDER BY c.due_date, CASE c.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END`).all(today),
-    dueToday: db.prepare(`${taskFields} WHERE c.due_date = ? AND ${unfinished} ORDER BY CASE c.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, c.position`).all(today),
-    doing: db.prepare(`${taskFields} WHERE lower(l.title) = 'doing' AND (c.due_date IS NULL OR c.due_date > ?) ORDER BY c.position`).all(today),
-    events: db.prepare(`${eventSelect} WHERE event_date = ? ORDER BY event_time, end_time, id`).all(today),
-  })
+  await ensureRecurringEvents(today)
+  const include = cardInclude
+  const priorityOrder = { high: 0, medium: 1, low: 2, none: 3 }
+  const lists = await prisma.list.findMany({ select: { id: true, title: true } })
+  const doneListIds = lists.filter(({ title }) => title.toLocaleLowerCase() === 'done').map(({ id }) => id)
+  const doingListIds = lists.filter(({ title }) => title.toLocaleLowerCase() === 'doing').map(({ id }) => id)
+  const [overdue, dueToday, doing, events] = await Promise.all([
+    prisma.card.findMany({ where: { dueDate: { lt: today }, listId: { notIn: doneListIds } }, include }),
+    prisma.card.findMany({ where: { dueDate: today, listId: { notIn: doneListIds } }, include }),
+    prisma.card.findMany({ where: { listId: { in: doingListIds }, OR: [{ dueDate: null }, { dueDate: { gt: today } }] }, orderBy: { position: 'asc' }, include }),
+    prisma.event.findMany({ where: { eventDate: today }, orderBy: [{ eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] }),
+  ])
+  overdue.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || priorityOrder[a.priority] - priorityOrder[b.priority])
+  dueToday.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority] || a.position - b.position)
+  response.json({ date: today, overdue: overdue.map(cardJson), dueToday: dueToday.map(cardJson), doing: doing.map(cardJson), events: events.map(eventJson) })
 })
-app.post('/api/today/tasks', (request, response) => {
+
+app.post('/api/today/tasks', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   if (!title) return response.status(400).json({ error: 'title is required' })
-  const list = db.prepare("SELECT id FROM lists WHERE lower(title) = 'to do' ORDER BY position LIMIT 1").get()
-    ?? db.prepare('SELECT id FROM lists ORDER BY position LIMIT 1').get()
+  const lists = await prisma.list.findMany({ orderBy: { position: 'asc' }, select: { id: true, title: true } })
+  const list = lists.find(({ title }) => title.toLocaleLowerCase() === 'to do') ?? lists[0]
   if (!list) return response.status(409).json({ error: 'create a task list first' })
-  const dueDate = new Date().toLocaleDateString('en-CA')
-  const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM cards WHERE list_id = ?').get(list.id).next
-  const created = db.prepare("INSERT INTO cards (list_id, title, position, color, due_date) VALUES (?, ?, ?, 'gray', ?)").run(list.id, title, position, dueDate)
-  response.status(201).json(db.prepare(`${cardSelect} WHERE c.id = ?`).get(created.lastInsertRowid))
+  const card = await prisma.card.create({ data: { listId: list.id, title, position: await nextCardPosition(prisma, list.id), color: 'gray', dueDate: new Date().toLocaleDateString('en-CA') }, include: cardInclude })
+  response.status(201).json(cardJson(card))
 })
 
-app.get('/api/events', (request, response) => {
+app.get('/api/events', async (request, response) => {
   const month = typeof request.query.month === 'string' ? request.query.month : ''
   if (!/^\d{4}-\d{2}$/.test(month)) return response.status(400).json({ error: 'valid month is required' })
   const [year, monthNumber] = month.split('-').map(Number)
@@ -468,26 +292,33 @@ app.get('/api/events', (request, response) => {
   first.setUTCDate(first.getUTCDate() - ((first.getUTCDay() + 6) % 7))
   const end = new Date(first)
   end.setUTCDate(end.getUTCDate() + 42)
-  const dateOnly = (date) => date.toISOString().slice(0, 10)
-  ensureRecurringEvents(dateOnly(end))
-  response.json(db.prepare(`${eventSelect} WHERE event_date >= ? AND event_date < ? ORDER BY event_date, event_time, end_time, id`).all(dateOnly(first), dateOnly(end)))
+  const startDate = first.toISOString().slice(0, 10)
+  const endDate = end.toISOString().slice(0, 10)
+  await ensureRecurringEvents(endDate)
+  const events = await prisma.event.findMany({ where: { eventDate: { gte: startDate, lt: endDate } }, orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] })
+  response.json(events.map(eventJson))
 })
 
-app.get('/api/deadlines', (_request, response) => {
-  ensureRecurringEvents(new Date(Date.now() + 366 * 86_400_000).toISOString().slice(0, 10))
-  response.json(db.prepare(`${eventSelect} WHERE is_deadline = 1 AND event_date >= date('now', 'localtime') ORDER BY event_date, event_time, end_time, id LIMIT 20`).all())
+app.get('/api/deadlines', async (_request, response) => {
+  await ensureRecurringEvents(new Date(Date.now() + 366 * 86_400_000).toISOString().slice(0, 10))
+  const events = await prisma.event.findMany({ where: { isDeadline: 1, eventDate: { gte: new Date().toLocaleDateString('en-CA') } }, orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }], take: 20 })
+  response.json(events.map(eventJson))
 })
 
-app.get('/api/events/:id', (request, response) => {
-  const event = db.prepare(`${eventSelect} WHERE id = ?`).get(request.params.id)
+app.get('/api/events/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const event = Number.isInteger(id) && await prisma.event.findUnique({
+    where: { id },
+    include: {
+      comments: { orderBy: { id: 'desc' } },
+      notebookLinks: { orderBy: { notebook: { title: 'asc' } }, select: { notebook: { select: { id: true, title: true } } } },
+    },
+  })
   if (!event) return response.status(404).json({ error: 'event not found' })
-  const comments = db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM event_comments WHERE event_id = ? ORDER BY id DESC').all(event.id)
-  const notebooks = db.prepare(`SELECT n.id, n.title FROM event_notebook_links l JOIN notebooks n ON n.id = l.notebook_id
-    WHERE l.event_id = ? ORDER BY n.title`).all(event.id)
-  response.json({ ...event, comments, notebooks })
+  response.json({ ...eventJson(event), comments: event.comments.map(commentJson), notebooks: event.notebookLinks.map(({ notebook }) => notebook) })
 })
 
-app.post('/api/events', (request, response) => {
+app.post('/api/events', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   const eventDate = typeof request.body.eventDate === 'string' ? request.body.eventDate : ''
   const eventTime = typeof request.body.eventTime === 'string' ? request.body.eventTime : ''
@@ -501,12 +332,11 @@ app.post('/api/events', (request, response) => {
   if (endTime <= eventTime) return response.status(400).json({ error: 'end time must be after start time' })
   if (!organizerColors.includes(color)) return response.status(400).json({ error: 'valid color is required' })
   if (!recurrences.includes(recurrence) || !Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365) return response.status(400).json({ error: 'valid recurrence is required' })
-  const result = db.prepare(`INSERT INTO events (title, event_date, event_time, end_time, color, recurrence, recurrence_interval)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(title, eventDate, eventTime, endTime, color, recurrence, recurrenceInterval)
-  response.status(201).json(db.prepare(`${eventSelect} WHERE id = ?`).get(result.lastInsertRowid))
+  const event = await prisma.event.create({ data: { title, eventDate, eventTime, endTime, color, recurrence, recurrenceInterval } })
+  response.status(201).json(eventJson(event))
 })
 
-app.post('/api/deadlines', (request, response) => {
+app.post('/api/deadlines', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   const eventDate = typeof request.body.eventDate === 'string' ? request.body.eventDate : ''
   const eventTime = typeof request.body.eventTime === 'string' ? request.body.eventTime : ''
@@ -516,13 +346,13 @@ app.post('/api/deadlines', (request, response) => {
   if (!validDate(eventDate)) return response.status(400).json({ error: 'valid deadline date is required' })
   if (!timePattern.test(eventTime)) return response.status(400).json({ error: 'valid deadline time is required' })
   if (!recurrences.includes(recurrence) || !Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365) return response.status(400).json({ error: 'valid recurrence is required' })
-  const result = db.prepare(`INSERT INTO events (title, event_date, event_time, end_time, is_deadline, recurrence, recurrence_interval)
-    VALUES (?, ?, ?, ?, 1, ?, ?)`).run(title, eventDate, eventTime, eventTime, recurrence, recurrenceInterval)
-  response.status(201).json(db.prepare(`${eventSelect} WHERE id = ?`).get(result.lastInsertRowid))
+  const event = await prisma.event.create({ data: { title, eventDate, eventTime, endTime: eventTime, isDeadline: 1, recurrence, recurrenceInterval } })
+  response.status(201).json(eventJson(event))
 })
 
-app.patch('/api/events/:id', (request, response) => {
-  const current = db.prepare(`${eventSelect} WHERE id = ?`).get(request.params.id)
+app.patch('/api/events/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const current = Number.isInteger(id) && await prisma.event.findUnique({ where: { id } })
   if (!current) return response.status(404).json({ error: 'event not found' })
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : null
   const description = typeof request.body.description === 'string' ? request.body.description.trim() : null
@@ -539,82 +369,114 @@ app.patch('/api/events/:id', (request, response) => {
   if (color !== null && !organizerColors.includes(color)) return response.status(400).json({ error: 'valid color is required' })
   if (recurrence !== null && !recurrences.includes(recurrence)) return response.status(400).json({ error: 'valid recurrence is required' })
   if (recurrenceInterval !== null && (!Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365)) return response.status(400).json({ error: 'valid recurrence interval is required' })
-  const nextStart = eventTime ?? current.event_time
-  const nextEnd = current.is_deadline ? nextStart : (endTime ?? current.end_time)
-  if (!current.is_deadline && nextStart >= nextEnd) return response.status(400).json({ error: 'end time must be after start time' })
-  if (current.recurrence_parent_id === null && (eventDate !== null || eventTime !== null || endTime !== null || recurrence !== null || recurrenceInterval !== null)) {
-    db.prepare('DELETE FROM events WHERE recurrence_parent_id = ?').run(current.id)
-  }
-  db.prepare(`UPDATE events SET title = COALESCE(?, title), description = COALESCE(?, description), event_date = COALESCE(?, event_date),
-    event_time = ?, end_time = ?, color = COALESCE(?, color), recurrence = COALESCE(?, recurrence),
-    recurrence_interval = COALESCE(?, recurrence_interval) WHERE id = ?`)
-    .run(title, description, eventDate, nextStart, nextEnd, color, recurrence, recurrenceInterval, current.id)
-  response.json(db.prepare(`${eventSelect} WHERE id = ?`).get(current.id))
+  const nextStart = eventTime ?? current.eventTime
+  const nextEnd = current.isDeadline ? nextStart : (endTime ?? current.endTime)
+  if (!current.isDeadline && nextStart >= nextEnd) return response.status(400).json({ error: 'end time must be after start time' })
+  const updated = await prisma.$transaction(async (tx) => {
+    if (current.recurrenceParentId === null && (eventDate !== null || eventTime !== null || endTime !== null || recurrence !== null || recurrenceInterval !== null)) {
+      await tx.event.deleteMany({ where: { recurrenceParentId: current.id } })
+    }
+    return tx.event.update({
+      where: { id },
+      data: {
+        ...(title !== null && { title }),
+        ...(description !== null && { description }),
+        ...(eventDate !== null && { eventDate }),
+        eventTime: nextStart,
+        endTime: nextEnd,
+        ...(color !== null && { color }),
+        ...(recurrence !== null && { recurrence }),
+        ...(recurrenceInterval !== null && { recurrenceInterval }),
+      },
+    })
+  })
+  response.json(eventJson(updated))
 })
 
-app.delete('/api/events/:id', (request, response) => {
-  const result = db.prepare('DELETE FROM events WHERE id = ?').run(request.params.id)
-  if (!result.changes) return response.status(404).json({ error: 'event not found' })
+app.delete('/api/events/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const result = Number.isInteger(id) ? await prisma.event.deleteMany({ where: { id } }) : { count: 0 }
+  if (!result.count) return response.status(404).json({ error: 'event not found' })
   response.json({ ok: true })
 })
 
-app.post('/api/events/:id/comments', (request, response) => {
+function commentInput(request) {
   const body = typeof request.body.body === 'string' ? request.body.body.trim() : ''
   const image = typeof request.body.image === 'string' && /^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.image) ? request.body.image : null
   const fileName = typeof request.body.fileName === 'string' ? request.body.fileName.replace(/[\\/\r\n]/g, ' ').trim().slice(0, 255) : null
   const fileMimeType = typeof request.body.fileMimeType === 'string' ? request.body.fileMimeType.trim().slice(0, 255) : null
   const fileData = typeof request.body.fileData === 'string' && /^data:[^;]+;base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.fileData) ? request.body.fileData : null
   const fileSize = request.body.fileSize === undefined || request.body.fileSize === null ? null : Number(request.body.fileSize)
+  return { body, image, fileName, fileMimeType, fileData, fileSize }
+}
+
+function validateComment(request, response, input) {
   const hasFileFields = [request.body.fileName, request.body.fileMimeType, request.body.fileData, request.body.fileSize].some((value) => value !== undefined && value !== null && value !== '')
-  if (!body && !image && !fileData) return response.status(400).json({ error: 'comment or attachment is required' })
-  if (typeof request.body.image === 'string' && !image) return response.status(400).json({ error: 'valid image is required' })
-  if (hasFileFields && (!fileName || !fileMimeType || !fileData || !Number.isInteger(fileSize) || fileSize < 0)) return response.status(400).json({ error: 'valid file attachment is required' })
-  if (fileData && Buffer.byteLength(fileData, 'utf8') > 7_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
-  if (fileSize !== null && fileSize > 5_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
-  if (image && Buffer.byteLength(image, 'utf8') > 7_000_000) return response.status(413).json({ error: 'image must be 5 MB or smaller' })
-  if (!db.prepare('SELECT 1 FROM events WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'event not found' })
-  const result = db.prepare(`INSERT INTO event_comments
-    (event_id, body, image, file_name, file_mime_type, file_data, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(request.params.id, body, image, fileName, fileMimeType, fileData, fileSize)
-  response.status(201).json(db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM event_comments WHERE id = ?').get(result.lastInsertRowid))
+  if (!input.body && !input.image && !input.fileData) return response.status(400).json({ error: 'comment or attachment is required' })
+  if (typeof request.body.image === 'string' && !input.image) return response.status(400).json({ error: 'valid image is required' })
+  if (hasFileFields && (!input.fileName || !input.fileMimeType || !input.fileData || !Number.isInteger(input.fileSize) || input.fileSize < 0)) return response.status(400).json({ error: 'valid file attachment is required' })
+  if (input.fileData && Buffer.byteLength(input.fileData, 'utf8') > 7_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
+  if (input.fileSize !== null && input.fileSize > 5_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
+  if (input.image && Buffer.byteLength(input.image, 'utf8') > 7_000_000) return response.status(413).json({ error: 'image must be 5 MB or smaller' })
+  return null
+}
+
+app.post('/api/events/:id/comments', async (request, response) => {
+  const input = commentInput(request)
+  const invalid = validateComment(request, response, input)
+  if (invalid) return invalid
+  const eventId = idFrom(request.params.id)
+  if (!Number.isInteger(eventId) || !await prisma.event.findUnique({ where: { id: eventId }, select: { id: true } })) return response.status(404).json({ error: 'event not found' })
+  const comment = await prisma.eventComment.create({ data: { eventId, ...input } })
+  response.status(201).json(commentJson(comment))
 })
-app.post('/api/events/:id/notebook-links', (request, response) => {
+
+app.post('/api/events/:id/notebook-links', async (request, response) => {
+  const eventId = idFrom(request.params.id)
   const notebookId = Number(request.body.notebookId)
-  if (!db.prepare('SELECT 1 FROM events WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'event not found' })
-  if (!Number.isInteger(notebookId) || !db.prepare('SELECT 1 FROM notebooks WHERE id = ?').get(notebookId)) return response.status(404).json({ error: 'notebook not found' })
-  db.prepare('INSERT OR IGNORE INTO event_notebook_links (event_id, notebook_id) VALUES (?, ?)').run(request.params.id, notebookId)
+  if (!Number.isInteger(eventId) || !await prisma.event.findUnique({ where: { id: eventId }, select: { id: true } })) return response.status(404).json({ error: 'event not found' })
+  if (!Number.isInteger(notebookId) || !await prisma.notebook.findUnique({ where: { id: notebookId }, select: { id: true } })) return response.status(404).json({ error: 'notebook not found' })
+  await prisma.eventNotebookLink.upsert({ where: { eventId_notebookId: { eventId, notebookId } }, update: {}, create: { eventId, notebookId } })
   response.status(201).json({ ok: true })
 })
 
-app.delete('/api/events/:id/notebook-links/:notebookId', (request, response) => {
-  const result = db.prepare('DELETE FROM event_notebook_links WHERE event_id = ? AND notebook_id = ?').run(request.params.id, request.params.notebookId)
-  if (!result.changes) return response.status(404).json({ error: 'link not found' })
+app.delete('/api/events/:id/notebook-links/:notebookId', async (request, response) => {
+  const eventId = idFrom(request.params.id)
+  const notebookId = idFrom(request.params.notebookId)
+  const result = Number.isInteger(eventId) && Number.isInteger(notebookId)
+    ? await prisma.eventNotebookLink.deleteMany({ where: { eventId, notebookId } })
+    : { count: 0 }
+  if (!result.count) return response.status(404).json({ error: 'link not found' })
   response.json({ ok: true })
 })
 
-app.get('/api/board', (_request, response) => {
-  const lists = db.prepare('SELECT id, title FROM lists ORDER BY position, id').all()
-  const cards = db.prepare(`${cardSelect} ORDER BY c.position, c.id`).all()
-  response.json(lists.map((list) => ({ ...list, cards: cards.filter((card) => card.list_id === list.id) })))
+app.get('/api/board', async (_request, response) => {
+  const lists = await prisma.list.findMany({
+    orderBy: [{ position: 'asc' }, { id: 'asc' }],
+    select: { id: true, title: true, cards: { orderBy: [{ position: 'asc' }, { id: 'asc' }], include: cardInclude } },
+  })
+  response.json(lists.map(({ cards, ...list }) => ({ ...list, cards: cards.map(cardJson) })))
 })
 
-app.get('/api/cards/:id', (request, response) => {
-  const detail = cardDetail(request.params.id)
+app.get('/api/cards/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const detail = Number.isInteger(id) && await cardDetail(id)
   if (!detail) return response.status(404).json({ error: 'card not found' })
   response.json(detail)
 })
 
-app.post('/api/lists/:listId/cards', (request, response) => {
+app.post('/api/lists/:listId/cards', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   if (!title) return response.status(400).json({ error: 'title is required' })
-  if (!db.prepare('SELECT 1 FROM lists WHERE id = ?').get(request.params.listId)) return response.status(404).json({ error: 'list not found' })
-  const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM cards WHERE list_id = ?').get(request.params.listId).next
-  const result = db.prepare("INSERT INTO cards (list_id, title, position, color) VALUES (?, ?, ?, 'gray')").run(request.params.listId, title, position)
-  response.status(201).json(db.prepare(`${cardSelect} WHERE c.id = ?`).get(result.lastInsertRowid))
+  const listId = idFrom(request.params.listId)
+  if (!Number.isInteger(listId) || !await prisma.list.findUnique({ where: { id: listId }, select: { id: true } })) return response.status(404).json({ error: 'list not found' })
+  const card = await prisma.card.create({ data: { listId, title, position: await nextCardPosition(prisma, listId), color: 'gray' }, include: cardInclude })
+  response.status(201).json(cardJson(card))
 })
 
-app.patch('/api/cards/:id', (request, response) => {
-  const current = db.prepare(`${cardSelect} WHERE c.id = ?`).get(request.params.id)
+app.patch('/api/cards/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const current = Number.isInteger(id) && await prisma.card.findUnique({ where: { id }, include: cardInclude })
   if (!current) return response.status(404).json({ error: 'card not found' })
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : null
   const description = typeof request.body.description === 'string' ? request.body.description.trim() : null
@@ -630,150 +492,128 @@ app.patch('/api/cards/:id', (request, response) => {
   if (recurrence !== null && !recurrences.includes(recurrence)) return response.status(400).json({ error: 'valid recurrence is required' })
   if (recurrenceInterval !== null && (!Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365)) return response.status(400).json({ error: 'valid recurrence interval is required' })
   const nextRecurrence = recurrence ?? current.recurrence
-  const nextDueDate = dueDate === undefined ? current.due_date : dueDate
+  const nextDueDate = dueDate === undefined ? current.dueDate : dueDate
   const nextTitle = title ?? current.title
   const nextDescription = description ?? current.description
   const nextColor = color ?? current.color
-  const nextRecurrenceInterval = recurrenceInterval ?? current.recurrence_interval
+  const nextRecurrenceInterval = recurrenceInterval ?? current.recurrenceInterval
   if (nextRecurrence !== 'none' && !nextDueDate) return response.status(400).json({ error: 'recurring tasks need a due date' })
-  db.exec('BEGIN')
-  try {
-    db.prepare(`UPDATE cards SET title = COALESCE(?, title), description = COALESCE(?, description), color = COALESCE(?, color),
-      due_date = ?, priority = COALESCE(?, priority), recurrence = COALESCE(?, recurrence),
-      recurrence_interval = COALESCE(?, recurrence_interval) WHERE id = ?`)
-      .run(title, description, color, nextDueDate, priority, recurrence, recurrenceInterval, current.id)
+  await prisma.$transaction(async (tx) => {
+    await tx.card.update({
+      where: { id },
+      data: {
+        ...(title !== null && { title }),
+        ...(description !== null && { description }),
+        ...(color !== null && { color }),
+        dueDate: nextDueDate,
+        ...(priority !== null && { priority }),
+        ...(recurrence !== null && { recurrence }),
+        ...(recurrenceInterval !== null && { recurrenceInterval }),
+      },
+    })
     if (description !== null) {
-      syncCardDescriptionLinks(current.id, description, nextDueDate)
-      if (!/^!checklist$/m.test(description)) db.prepare('DELETE FROM checklist_items WHERE card_id = ?').run(current.id)
+      await syncCardDescriptionLinks(tx, id, description, nextDueDate)
+      if (!/^!checklist$/m.test(description)) await tx.checklistItem.deleteMany({ where: { cardId: id } })
     }
-    syncCardDeadline({ cardId: current.id, title: nextTitle, description: nextDescription, color: nextColor, dueDate: nextDueDate, recurrence: nextRecurrence, recurrenceInterval: nextRecurrenceInterval })
-    db.exec('COMMIT')
-  } catch (cause) {
-    db.exec('ROLLBACK')
-    throw cause
-  }
-  response.json(db.prepare(`${cardSelect} WHERE c.id = ?`).get(current.id))
+    await syncCardDeadline(tx, { cardId: id, title: nextTitle, description: nextDescription, color: nextColor, dueDate: nextDueDate, recurrence: nextRecurrence, recurrenceInterval: nextRecurrenceInterval })
+  })
+  response.json(await getCardSummary(prisma, id))
 })
 
-app.delete('/api/cards/:id', (request, response) => {
-  const result = db.prepare('DELETE FROM cards WHERE id = ?').run(request.params.id)
-  if (!result.changes) return response.status(404).json({ error: 'card not found' })
+app.delete('/api/cards/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const result = Number.isInteger(id) ? await prisma.card.deleteMany({ where: { id } }) : { count: 0 }
+  if (!result.count) return response.status(404).json({ error: 'card not found' })
   response.json({ ok: true })
 })
 
-app.patch('/api/cards/:id/move', (request, response) => {
-  const cardId = Number(request.params.id)
+app.patch('/api/cards/:id/move', async (request, response) => {
+  const cardId = idFrom(request.params.id)
   const listId = Number(request.body.listId)
   const index = Number(request.body.index)
-  const card = Number.isInteger(cardId) && db.prepare('SELECT * FROM cards WHERE id = ?').get(cardId)
+  const card = Number.isInteger(cardId) && await prisma.card.findUnique({ where: { id: cardId } })
   if (!card) return response.status(404).json({ error: 'card not found' })
-  if (!Number.isInteger(listId) || !db.prepare('SELECT 1 FROM lists WHERE id = ?').get(listId)) return response.status(404).json({ error: 'list not found' })
+  if (!Number.isInteger(listId) || !await prisma.list.findUnique({ where: { id: listId }, select: { id: true } })) return response.status(404).json({ error: 'list not found' })
   if (!Number.isInteger(index) || index < 0) return response.status(400).json({ error: 'invalid position' })
-  const source = db.prepare('SELECT id FROM cards WHERE list_id = ? AND id != ? ORDER BY position, id').all(card.list_id, cardId)
-  const destination = card.list_id === listId ? source : db.prepare('SELECT id FROM cards WHERE list_id = ? ORDER BY position, id').all(listId)
-  destination.splice(Math.min(index, destination.length), 0, { id: cardId })
-  const update = db.prepare('UPDATE cards SET list_id = ?, position = ? WHERE id = ?')
-  db.exec('BEGIN')
-  try {
-    if (card.list_id !== listId) source.forEach((item, position) => update.run(card.list_id, position, item.id))
-    destination.forEach((item, position) => update.run(listId, position, item.id))
-    completeRecurringCard(card, listId)
-    db.exec('COMMIT')
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
+  await moveCard(prisma, card, listId, index)
   response.json({ ok: true })
 })
 
-app.post('/api/cards/:id/comments', (request, response) => {
-  const body = typeof request.body.body === 'string' ? request.body.body.trim() : ''
-  const image = typeof request.body.image === 'string' && /^data:image\/(?:avif|gif|jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.image) ? request.body.image : null
-  const fileName = typeof request.body.fileName === 'string' ? request.body.fileName.replace(/[\\/\r\n]/g, ' ').trim().slice(0, 255) : null
-  const fileMimeType = typeof request.body.fileMimeType === 'string' ? request.body.fileMimeType.trim().slice(0, 255) : null
-  const fileData = typeof request.body.fileData === 'string' && /^data:[^;]+;base64,[A-Za-z0-9+/]+={0,2}$/.test(request.body.fileData) ? request.body.fileData : null
-  const fileSize = request.body.fileSize === undefined || request.body.fileSize === null ? null : Number(request.body.fileSize)
-  const hasFileFields = [request.body.fileName, request.body.fileMimeType, request.body.fileData, request.body.fileSize].some((value) => value !== undefined && value !== null && value !== '')
-  if (!body && !image && !fileData) return response.status(400).json({ error: 'comment or attachment is required' })
-  if (typeof request.body.image === 'string' && !image) return response.status(400).json({ error: 'valid image is required' })
-  if (hasFileFields && (!fileName || !fileMimeType || !fileData || !Number.isInteger(fileSize) || fileSize < 0)) return response.status(400).json({ error: 'valid file attachment is required' })
-  if (fileData && Buffer.byteLength(fileData, 'utf8') > 7_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
-  if (fileSize !== null && fileSize > 5_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
-  if (image && Buffer.byteLength(image, 'utf8') > 7_000_000) return response.status(413).json({ error: 'image must be 5 MB or smaller' })
-  if (!db.prepare('SELECT 1 FROM cards WHERE id = ?').get(request.params.id)) {
-    return response.status(404).json({ error: 'card not found' })
-  }
-  const result = db.prepare(`INSERT INTO comments
-    (card_id, body, image, file_name, file_mime_type, file_data, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(request.params.id, body, image, fileName, fileMimeType, fileData, fileSize)
-  response.status(201).json(db.prepare('SELECT id, body, image, file_name, file_mime_type, file_data, file_size, created_at FROM comments WHERE id = ?').get(result.lastInsertRowid))
-})
-app.post('/api/cards/:id/checklist', (request, response) => {
-  const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
-  if (!title) return response.status(400).json({ error: 'checklist title is required' })
-  if (!db.prepare('SELECT 1 FROM cards WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'card not found' })
-  const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM checklist_items WHERE card_id = ?').get(request.params.id).next
-  const created = db.prepare('INSERT INTO checklist_items (card_id, title, position) VALUES (?, ?, ?)').run(request.params.id, title, position)
-  response.status(201).json(db.prepare('SELECT id, title, completed, position, created_at FROM checklist_items WHERE id = ?').get(created.lastInsertRowid))
+app.post('/api/cards/:id/comments', async (request, response) => {
+  const input = commentInput(request)
+  const invalid = validateComment(request, response, input)
+  if (invalid) return invalid
+  const cardId = idFrom(request.params.id)
+  if (!Number.isInteger(cardId) || !await prisma.card.findUnique({ where: { id: cardId }, select: { id: true } })) return response.status(404).json({ error: 'card not found' })
+  const comment = await prisma.cardComment.create({ data: { cardId, ...input } })
+  response.status(201).json(commentJson(comment))
 })
 
-app.patch('/api/checklist/:id', (request, response) => {
-  const item = db.prepare('SELECT * FROM checklist_items WHERE id = ?').get(request.params.id)
+app.post('/api/cards/:id/checklist', async (request, response) => {
+  const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
+  if (!title) return response.status(400).json({ error: 'checklist title is required' })
+  const cardId = idFrom(request.params.id)
+  if (!Number.isInteger(cardId) || !await prisma.card.findUnique({ where: { id: cardId }, select: { id: true } })) return response.status(404).json({ error: 'card not found' })
+  const item = await prisma.checklistItem.create({ data: { cardId, title, position: await nextChecklistPosition(prisma, cardId) } })
+  response.status(201).json(checklistJson(item))
+})
+
+app.patch('/api/checklist/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const item = Number.isInteger(id) && await prisma.checklistItem.findUnique({ where: { id } })
   if (!item) return response.status(404).json({ error: 'checklist item not found' })
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : null
   const completed = typeof request.body.completed === 'boolean' ? Number(request.body.completed) : null
   if (title === '') return response.status(400).json({ error: 'checklist title is required' })
-  db.prepare('UPDATE checklist_items SET title = COALESCE(?, title), completed = COALESCE(?, completed) WHERE id = ?').run(title, completed, item.id)
-  response.json(db.prepare('SELECT id, title, completed, position, created_at FROM checklist_items WHERE id = ?').get(item.id))
+  const updated = await prisma.checklistItem.update({ where: { id }, data: { ...(title !== null && { title }), ...(completed !== null && { completed }) } })
+  response.json(checklistJson(updated))
 })
 
-app.patch('/api/checklist/:id/move', (request, response) => {
-  const item = db.prepare('SELECT * FROM checklist_items WHERE id = ?').get(request.params.id)
+app.patch('/api/checklist/:id/move', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const item = Number.isInteger(id) && await prisma.checklistItem.findUnique({ where: { id } })
   if (!item) return response.status(404).json({ error: 'checklist item not found' })
   const direction = request.body.direction
   if (direction !== 'up' && direction !== 'down') return response.status(400).json({ error: 'direction must be up or down' })
-  const sibling = db.prepare(`SELECT * FROM checklist_items WHERE card_id = ? AND position ${direction === 'up' ? '<' : '>'} ? ORDER BY position ${direction === 'up' ? 'DESC' : 'ASC'}, id ${direction === 'up' ? 'DESC' : 'ASC'} LIMIT 1`).get(item.card_id, item.position)
-  if (sibling) {
-    db.exec('BEGIN')
-    try {
-      db.prepare('UPDATE checklist_items SET position = ? WHERE id = ?').run(sibling.position, item.id)
-      db.prepare('UPDATE checklist_items SET position = ? WHERE id = ?').run(item.position, sibling.id)
-      db.exec('COMMIT')
-    } catch (error) { db.exec('ROLLBACK'); throw error }
-  }
+  const sibling = await prisma.checklistItem.findFirst({
+    where: { cardId: item.cardId, position: direction === 'up' ? { lt: item.position } : { gt: item.position } },
+    orderBy: [{ position: direction === 'up' ? 'desc' : 'asc' }, { id: direction === 'up' ? 'desc' : 'asc' }],
+  })
+  if (sibling) await prisma.$transaction([
+    prisma.checklistItem.update({ where: { id: item.id }, data: { position: sibling.position } }),
+    prisma.checklistItem.update({ where: { id: sibling.id }, data: { position: item.position } }),
+  ])
   response.json({ ok: true })
 })
 
-app.post('/api/checklist/:id/convert', (request, response) => {
-  const item = db.prepare('SELECT ci.*, c.list_id FROM checklist_items ci JOIN cards c ON c.id = ci.card_id WHERE ci.id = ?').get(request.params.id)
+app.post('/api/checklist/:id/convert', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const item = Number.isInteger(id) && await prisma.checklistItem.findUnique({ where: { id }, include: { card: { select: { listId: true } } } })
   if (!item) return response.status(404).json({ error: 'checklist item not found' })
-  const position = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM cards WHERE list_id = ?').get(item.list_id).next
-  const created = db.prepare("INSERT INTO cards (list_id, title, position, color) VALUES (?, ?, ?, 'gray')").run(item.list_id, item.title, position)
-  db.prepare('DELETE FROM checklist_items WHERE id = ?').run(item.id)
-  response.status(201).json(db.prepare(`${cardSelect} WHERE c.id = ?`).get(created.lastInsertRowid))
+  const createdId = await prisma.$transaction(async (tx) => {
+    const card = await tx.card.create({ data: { listId: item.card.listId, title: item.title, position: await nextCardPosition(tx, item.card.listId), color: 'gray' } })
+    await tx.checklistItem.delete({ where: { id } })
+    return card.id
+  })
+  response.status(201).json(await getCardSummary(prisma, createdId))
 })
 
-app.delete('/api/checklist/:id', (request, response) => {
-  const item = db.prepare('SELECT id, card_id FROM checklist_items WHERE id = ?').get(request.params.id)
+app.delete('/api/checklist/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const item = Number.isInteger(id) && await prisma.checklistItem.findUnique({ where: { id }, select: { id: true, cardId: true } })
   if (!item) return response.status(404).json({ error: 'checklist item not found' })
-  db.exec('BEGIN')
-  try {
-    db.prepare('DELETE FROM checklist_items WHERE id = ?').run(item.id)
-    const remaining = db.prepare('SELECT 1 FROM checklist_items WHERE card_id = ? LIMIT 1').get(item.card_id)
-    if (!remaining) {
-      const card = db.prepare('SELECT description FROM cards WHERE id = ?').get(item.card_id)
+  await prisma.$transaction(async (tx) => {
+    await tx.checklistItem.delete({ where: { id } })
+    if (!await tx.checklistItem.findFirst({ where: { cardId: item.cardId }, select: { id: true } })) {
+      const card = await tx.card.findUnique({ where: { id: item.cardId }, select: { description: true } })
       const description = card.description.replace(/(^|\n)!checklist(?=\n|$)/g, '$1').replace(/\n{3,}/g, '\n\n').trim()
-      db.prepare('UPDATE cards SET description = ? WHERE id = ?').run(description, item.card_id)
+      await tx.card.update({ where: { id: item.cardId }, data: { description } })
     }
-    db.exec('COMMIT')
-  } catch (cause) {
-    db.exec('ROLLBACK')
-    throw cause
-  }
+  })
   response.json({ ok: true })
 })
 
-app.post('/api/cards/:id/attachments', (request, response) => {
+app.post('/api/cards/:id/attachments', async (request, response) => {
   const name = typeof request.body.name === 'string' ? request.body.name.trim().slice(0, 255) : ''
   const mimeType = typeof request.body.mimeType === 'string' ? request.body.mimeType : ''
   const data = typeof request.body.data === 'string' ? request.body.data : ''
@@ -781,37 +621,43 @@ app.post('/api/cards/:id/attachments', (request, response) => {
   if (!name || !match || match[1] !== mimeType) return response.status(400).json({ error: 'valid attachment is required' })
   const size = Buffer.from(match[2], 'base64').length
   if (size > 5_000_000) return response.status(413).json({ error: 'attachment must be 5 MB or smaller' })
-  if (!db.prepare('SELECT 1 FROM cards WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'card not found' })
-  const created = db.prepare('INSERT INTO card_attachments (card_id, name, mime_type, data, size) VALUES (?, ?, ?, ?, ?)').run(request.params.id, name, mimeType, data, size)
-  response.status(201).json(db.prepare('SELECT id, name, mime_type, data, size, created_at FROM card_attachments WHERE id = ?').get(created.lastInsertRowid))
+  const cardId = idFrom(request.params.id)
+  if (!Number.isInteger(cardId) || !await prisma.card.findUnique({ where: { id: cardId }, select: { id: true } })) return response.status(404).json({ error: 'card not found' })
+  const attachment = await prisma.cardAttachment.create({ data: { cardId, name, mimeType, data, size } })
+  response.status(201).json(attachmentJson(attachment))
 })
 
-app.delete('/api/attachments/:id', (request, response) => {
-  const result = db.prepare('DELETE FROM card_attachments WHERE id = ?').run(request.params.id)
-  if (!result.changes) return response.status(404).json({ error: 'attachment not found' })
+app.delete('/api/attachments/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const result = Number.isInteger(id) ? await prisma.cardAttachment.deleteMany({ where: { id } }) : { count: 0 }
+  if (!result.count) return response.status(404).json({ error: 'attachment not found' })
   response.json({ ok: true })
 })
 
-app.post('/api/cards/:id/links', (request, response) => {
+app.post('/api/cards/:id/links', async (request, response) => {
+  const cardId = idFrom(request.params.id)
   const targetId = Number(request.body.targetId)
   const type = request.body.type
-  if (!db.prepare('SELECT 1 FROM cards WHERE id = ?').get(request.params.id)) return response.status(404).json({ error: 'card not found' })
+  if (!Number.isInteger(cardId) || !await prisma.card.findUnique({ where: { id: cardId }, select: { id: true } })) return response.status(404).json({ error: 'card not found' })
   if (type === 'event') {
-    if (!Number.isInteger(targetId) || !db.prepare('SELECT 1 FROM events WHERE id = ?').get(targetId)) return response.status(404).json({ error: 'event not found' })
-    db.prepare('INSERT OR IGNORE INTO card_event_links (card_id, event_id) VALUES (?, ?)').run(request.params.id, targetId)
+    if (!Number.isInteger(targetId) || !await prisma.event.findUnique({ where: { id: targetId }, select: { id: true } })) return response.status(404).json({ error: 'event not found' })
+    await prisma.cardEventLink.upsert({ where: { cardId_eventId: { cardId, eventId: targetId } }, update: {}, create: { cardId, eventId: targetId } })
   } else if (type === 'notebook') {
-    if (!Number.isInteger(targetId) || !db.prepare('SELECT 1 FROM notebooks WHERE id = ?').get(targetId)) return response.status(404).json({ error: 'notebook not found' })
-    db.prepare('INSERT OR IGNORE INTO card_notebook_links (card_id, notebook_id) VALUES (?, ?)').run(request.params.id, targetId)
+    if (!Number.isInteger(targetId) || !await prisma.notebook.findUnique({ where: { id: targetId }, select: { id: true } })) return response.status(404).json({ error: 'notebook not found' })
+    await prisma.cardNotebookLink.upsert({ where: { cardId_notebookId: { cardId, notebookId: targetId } }, update: {}, create: { cardId, notebookId: targetId } })
   } else return response.status(400).json({ error: 'link type must be event or notebook' })
   response.status(201).json({ ok: true })
 })
 
-app.delete('/api/cards/:id/links/:type/:targetId', (request, response) => {
-  const table = request.params.type === 'event' ? 'card_event_links' : request.params.type === 'notebook' ? 'card_notebook_links' : null
-  const column = request.params.type === 'event' ? 'event_id' : 'notebook_id'
-  if (!table) return response.status(400).json({ error: 'link type must be event or notebook' })
-  const result = db.prepare(`DELETE FROM ${table} WHERE card_id = ? AND ${column} = ?`).run(request.params.id, request.params.targetId)
-  if (!result.changes) return response.status(404).json({ error: 'link not found' })
+app.delete('/api/cards/:id/links/:type/:targetId', async (request, response) => {
+  const cardId = idFrom(request.params.id)
+  const targetId = idFrom(request.params.targetId)
+  if (request.params.type !== 'event' && request.params.type !== 'notebook') return response.status(400).json({ error: 'link type must be event or notebook' })
+  let result
+  if (!Number.isInteger(cardId) || !Number.isInteger(targetId)) result = { count: 0 }
+  else if (request.params.type === 'event') result = await prisma.cardEventLink.deleteMany({ where: { cardId, eventId: targetId } })
+  else result = await prisma.cardNotebookLink.deleteMany({ where: { cardId, notebookId: targetId } })
+  if (!result.count) return response.status(404).json({ error: 'link not found' })
   response.json({ ok: true })
 })
 
@@ -819,9 +665,12 @@ const port = Number(process.env.PORT) || 3000
 const host = process.env.HOST || '127.0.0.1'
 const server = app.listen(port, host, () => console.log(`API listening on http://${host}:${port}`))
 
+let shuttingDown = false
 function shutdown() {
-  server.close(() => {
-    db.close()
+  if (shuttingDown) return
+  shuttingDown = true
+  server.close(async () => {
+    await prisma.$disconnect()
     process.exit(0)
   })
 }

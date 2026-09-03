@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      DATABASE_URL: file:../data/organizer.db
       HOST: 0.0.0.0
       PORT: 3000
     ports:

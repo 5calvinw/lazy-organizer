@@ -10,6 +10,8 @@ npm start
 
 The backend listens on `http://127.0.0.1:3000`. Its MCP endpoint is `http://127.0.0.1:3000/mcp` and requires the `MCP_API_KEY` from `backend/.env`.
 
+The backend uses Prisma with SQLite. Set `DATABASE_URL=file:../data/organizer.db` in `backend/.env`; `npm start` synchronizes the schema automatically. Use `npm run db:studio` from `backend` to inspect or edit data in Prisma Studio.
+
 ## Connect Hermes
 
 Copy the same key into `~/.hermes/.env`:
