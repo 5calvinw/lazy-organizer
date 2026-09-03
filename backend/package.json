@@ -16,9 +16,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@prisma/client": "^6.19.2",
     "express": "^5.1.0",
+    "prisma": "^6.19.2",
     "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "prisma": "^6.19.2"
   }
 }
