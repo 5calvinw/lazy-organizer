@@ -1,3 +1,4 @@
+name: lazy-organizer-frontend
 services:
   frontend:
     build: .
