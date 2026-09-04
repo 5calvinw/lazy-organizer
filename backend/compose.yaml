@@ -1,3 +1,5 @@
+name: lazy-organizer-backend
+
 services:
   backend:
     build: .
