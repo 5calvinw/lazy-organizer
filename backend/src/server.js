@@ -16,6 +16,7 @@ import {
   nextChecklistPosition,
   notebookJson,
   prisma,
+  syncCardDeadline,
 } from './store.js'
 
 const organizerColors = ['blue', 'green', 'yellow', 'purple', 'orange', 'gray']
@@ -121,41 +122,6 @@ async function syncCardDescriptionLinks(tx, cardId, description, dueDate) {
     }),
     tx.cardNotebookLink.deleteMany({ where: { cardId, notebookId: { notIn: notebookIds } } }),
   ])
-}
-
-async function syncCardDeadline(tx, { cardId, title, description, color, dueDate, recurrence, recurrenceInterval }) {
-  const deadlines = await tx.event.findMany({
-    where: { cardLinks: { some: { cardId } }, isDeadline: 1 },
-    orderBy: [{ recurrenceParentId: 'asc' }, { id: 'asc' }],
-  })
-  if (dueDate === null) {
-    await tx.event.deleteMany({ where: { id: { in: deadlines.map(({ id }) => id) } } })
-    return
-  }
-  const existing = deadlines[0]
-  const eventTime = existing?.eventTime ?? '09:00'
-  if (existing) {
-    if (existing.recurrenceParentId === null) await tx.event.deleteMany({ where: { recurrenceParentId: existing.id } })
-    await tx.event.update({
-      where: { id: existing.id },
-      data: { title, description, eventDate: dueDate, eventTime, endTime: eventTime, isDeadline: 1, color, recurrence, recurrenceInterval },
-    })
-    return
-  }
-  await tx.event.create({
-    data: {
-      title,
-      description,
-      eventDate: dueDate,
-      eventTime,
-      endTime: eventTime,
-      isDeadline: 1,
-      color,
-      recurrence,
-      recurrenceInterval,
-      cardLinks: { create: { cardId } },
-    },
-  })
 }
 
 await seedDefaultBoard()

@@ -10,6 +10,7 @@ import {
   moveCard,
   nextCardPosition,
   nextChecklistPosition,
+  syncCardDeadline,
 } from './store.js'
 
 const id = z.number().int().positive()
@@ -108,9 +109,13 @@ export function createOrganizerMcpServer(db) {
   }, tool(async ({ list_id, title, description = '', due_date = null, priority = 'none', color = 'gray', recurrence = 'none', recurrence_interval = 1 }) => {
     requireRow(await db.list.findUnique({ where: { id: list_id }, select: { id: true } }), 'list not found')
     if (recurrence !== 'none' && !due_date) throw new Error('recurring tasks need a due_date')
-    const card = await db.card.create({
-      data: { listId: list_id, title, description, position: await nextCardPosition(db, list_id), color, dueDate: due_date, priority, recurrence, recurrenceInterval: recurrence_interval },
-      include: cardInclude,
+    const card = await db.$transaction(async (tx) => {
+      const created = await tx.card.create({
+        data: { listId: list_id, title, description, position: await nextCardPosition(tx, list_id), color, dueDate: due_date, priority, recurrence, recurrenceInterval: recurrence_interval },
+        include: cardInclude,
+      })
+      await syncCardDeadline(tx, { cardId: created.id, title, description, color, dueDate: due_date, recurrence, recurrenceInterval: recurrence_interval })
+      return created
     })
     return cardJson(card)
   }))
@@ -133,18 +138,25 @@ export function createOrganizerMcpServer(db) {
     if (Object.values(changes).every((value) => value === undefined)) throw new Error('at least one field is required')
     const nextDueDate = changes.due_date === undefined ? current.dueDate : changes.due_date
     const nextRecurrence = changes.recurrence ?? current.recurrence
+    const nextTitle = changes.title ?? current.title
+    const nextDescription = changes.description ?? current.description
+    const nextColor = changes.color ?? current.color
+    const nextRecurrenceInterval = changes.recurrence_interval ?? current.recurrenceInterval
     if (nextRecurrence !== 'none' && !nextDueDate) throw new Error('recurring tasks need a due_date')
-    await db.card.update({
-      where: { id: card_id },
-      data: {
-        ...(changes.title !== undefined && { title: changes.title }),
-        ...(changes.description !== undefined && { description: changes.description }),
-        ...(changes.color !== undefined && { color: changes.color }),
-        dueDate: nextDueDate,
-        ...(changes.priority !== undefined && { priority: changes.priority }),
-        recurrence: nextRecurrence,
-        ...(changes.recurrence_interval !== undefined && { recurrenceInterval: changes.recurrence_interval }),
-      },
+    await db.$transaction(async (tx) => {
+      await tx.card.update({
+        where: { id: card_id },
+        data: {
+          ...(changes.title !== undefined && { title: changes.title }),
+          ...(changes.description !== undefined && { description: changes.description }),
+          ...(changes.color !== undefined && { color: changes.color }),
+          dueDate: nextDueDate,
+          ...(changes.priority !== undefined && { priority: changes.priority }),
+          recurrence: nextRecurrence,
+          ...(changes.recurrence_interval !== undefined && { recurrenceInterval: changes.recurrence_interval }),
+        },
+      })
+      await syncCardDeadline(tx, { cardId: card_id, title: nextTitle, description: nextDescription, color: nextColor, dueDate: nextDueDate, recurrence: nextRecurrence, recurrenceInterval: nextRecurrenceInterval })
     })
     return getCardSummary(db, card_id)
   }))
