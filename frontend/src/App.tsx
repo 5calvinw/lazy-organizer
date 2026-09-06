@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
 import './App.css'
 
 type OrganizerColor = 'blue' | 'green' | 'yellow' | 'purple' | 'orange' | 'gray'
@@ -40,6 +40,9 @@ type EventItem = {
   event_date: string
   event_time: string
   end_time: string
+  end_date: string | null
+  all_day: boolean
+  time_zone: string | null
   is_deadline: number
   color: OrganizerColor
   recurrence: Recurrence
@@ -250,7 +253,7 @@ function TodayApp({ active, openCard, openEvent, openCalendar }: { active: boole
           {data.overdue.length > 0 && <details className="today-task-group today-overdue" open><summary><strong>Overdue</strong><span>{data.overdue.length}</span></summary>{taskRows(data.overdue)}</details>}
           {data.doing.length > 0 && <details className="today-task-group"><summary><strong>Continue working</strong><span>{data.doing.length}</span></summary>{taskRows(data.doing)}</details>}
         </div>
-        <aside className="today-schedule"><header><h2>Schedule</h2><span>{data.events.length}</span></header>{data.events.length ? <div className="today-agenda-list">{data.events.map((item) => <button className="today-event" key={item.id} onClick={() => openEvent(item.id)}><time dateTime={`${item.event_date}T${item.event_time}`}>{readableTime(item.event_time)}</time><span><strong>{item.title}</strong><small>{item.is_deadline ? 'Deadline' : `Until ${readableTime(item.end_time)}`}</small></span></button>)}</div> : <p className="today-empty">No events today.<br />Room to focus on your own time.</p>}<button className="today-calendar-link" onClick={openCalendar}>Open calendar</button></aside>
+        <aside className="today-schedule"><header><h2>Schedule</h2><span>{data.events.length}</span></header>{data.events.length ? <div className="today-agenda-list">{data.events.map((item) => <button className="today-event" key={item.id} onClick={() => openEvent(item.id)}><time dateTime={item.all_day ? item.event_date : `${item.event_date}T${item.event_time}`}>{item.all_day ? 'All day' : readableTime(item.event_time)}</time><span><strong>{item.title}</strong><small>{item.is_deadline ? 'Deadline' : item.all_day ? `Ends before ${readableDate(item.end_date ?? item.event_date)}` : `Until ${item.end_date && item.end_date !== item.event_date ? `${readableDate(item.end_date)} ` : ''}${readableTime(item.end_time)}`}{item.time_zone && !item.all_day ? ` (${item.time_zone})` : ''}</small></span></button>)}</div> : <p className="today-empty">No events today.<br />Room to focus on your own time.</p>}<button className="today-calendar-link" onClick={openCalendar}>Open calendar</button></aside>
       </div></>}
     </div>
   </main>
@@ -426,6 +429,132 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
 <section className="detail-section"><h3>Description</h3><RecordDescription key={selected.id} value={selected.description} label="Task description" options={linkOptions} checklist={selected.checklist} onSave={(description) => void saveCard({ description })} onAddChecklist={(event) => void addChecklist(event)} onChangeChecklist={(id, changes) => void changeChecklist(id, changes)} onDeleteChecklist={(id) => void deleteChecklist(id)} openNotebook={openNotebook} openEvent={openEvent} /></section><section className="detail-section"><header><h3>Attachments</h3><span>{selected.attachments.length}</span></header><div className="attachments">{selected.attachments.map((item) => <div key={item.id}><a href={item.data} download={item.name}>{item.mime_type.startsWith('image/') ? <img src={item.data} alt="" /> : <span className="file-mark">FILE</span>}<span><strong>{item.name}</strong><small>{Math.max(1, Math.round(item.size / 1024))} KB</small></span></a><button type="button" onClick={() => void deleteAttachment(item.id)} aria-label={`Remove ${item.name}`}>×</button></div>)}</div><label className="attachment-add">Attach files<input type="file" multiple onChange={(event) => { void addAttachments(event.target.files); event.target.value = '' }} /></label></section><button className="danger-action" type="button" onClick={() => void deleteCard()}>Delete task</button></section><aside className="activity"><header><h3>Comments and activity</h3></header><form className="comment-form" onSubmit={(event) => void addComment(event)}><div className="comment-composer"><textarea name="comment" rows={3} placeholder="Add a comment…" aria-label="Comment" onPaste={(event) => void pasteCommentImage(event)} /><div className="comment-toolbar"><div className="comment-tools" aria-label="Comment tools"><button type="button" className="comment-tool" aria-label="Bold" title="Bold" disabled><strong>B</strong></button><button type="button" className="comment-tool comment-tool-italic" aria-label="Italic" title="Italic" disabled><em>I</em></button><button type="button" className="comment-tool comment-tool-underline" aria-label="Underline" title="Underline" disabled><u>U</u></button><span className="comment-toolbar-divider" aria-hidden="true" /><label className="comment-attach" title="Attach image or file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg><input type="file" onChange={(event) => { void attachCommentFile(event.target.files); event.target.value = '' }} aria-label="Attach image or file" /></label></div><button className="comment-submit" type="submit">Post</button></div></div>{commentImage && <div className="comment-image-preview"><img src={commentImage} alt="Pasted attachment preview" /><button type="button" onClick={() => setCommentImage(null)} aria-label="Remove pasted image">×</button></div>}{commentAttachment && <div className="comment-file-preview">{commentAttachment.mimeType.startsWith('image/') ? <img src={commentAttachment.data} alt={commentAttachment.name + ' preview'} /> : <span className="file-mark">FILE</span>}<span className="comment-file-details"><strong>{commentAttachment.name}</strong><small>{Math.max(1, Math.round(commentAttachment.size / 1024))} KB</small></span><button type="button" onClick={() => setCommentAttachment(null)} aria-label="Remove attached file">×</button></div>}</form>{selected.comments.map((comment) => <div className="activity-item" key={comment.id}><span className="avatar">C</span><p><strong>You</strong>{comment.body && <> {comment.body}</>}{comment.image && <img src={comment.image} alt={comment.body || 'Comment attachment'} />}{comment.file_data && (comment.file_mime_type?.startsWith('image/') ? <img src={comment.file_data} alt={comment.file_name || 'Comment attachment'} /> : <a className="comment-file-link" href={comment.file_data} download={comment.file_name || 'attachment'}><span className="file-mark">FILE</span><span>{comment.file_name || 'Attachment'}</span></a>)}<small>{new Date(comment.created_at.replace(' ', 'T') + 'Z').toLocaleString()}</small></p></div>)}</aside></div>}</dialog></main>
 }
 
+type GoogleStatus = { configured: boolean; connected: boolean; lastSyncedAt: string | null }
+type GoogleResult = { imported: number; exported: number; deleted: number; conflicts: number; skipped: number; skippedReasons: Record<string, number>; limitations: string[]; window: { start: string; end: string }; timeZone: string }
+
+function GoogleCalendarControls({ active }: { active: boolean }) {
+  const [status, setStatus] = useState<GoogleStatus | null>(null)
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const [statusError, setStatusError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [result, setResult] = useState<GoogleResult | null>(null)
+  const pending = useRef(false)
+  const statusRequest = useRef(0)
+  const lastAttempt = useRef(0)
+  const controlsRef = useRef<HTMLDivElement>(null)
+  async function loadStatus() {
+    const id = ++statusRequest.current
+    try {
+      const next = await request<GoogleStatus>('/api/integrations/google/status')
+      if (id !== statusRequest.current) return null
+      setStatus(next); setStatusError('')
+      return next
+    } catch (cause) {
+      if (id === statusRequest.current) { setStatus(null); setStatusError(cause instanceof Error ? cause.message : 'Could not load Google Calendar status') }
+      return null
+    }
+  }
+  const autoSync = useEffectEvent(async (isCurrent: () => boolean) => {
+    if (pending.current || document.visibilityState !== 'visible') return
+    const next = await loadStatus()
+    if (!isCurrent() || document.visibilityState !== 'visible' || !next?.configured || !next.connected || pending.current) return
+    let attemptedAt = lastAttempt.current
+    try {
+      const stored = Number(window.localStorage.getItem('google-calendar-sync-attempt'))
+      if (Number.isFinite(stored)) attemptedAt = Math.max(attemptedAt, stored)
+    } catch { /* In-memory throttling still works when storage is unavailable. */ }
+    const syncedAt = Date.parse(next.lastSyncedAt || '')
+    if (Date.now() - Math.max(attemptedAt, Number.isFinite(syncedAt) ? syncedAt : 0) < 120_000) return
+    await act('sync')
+  })
+  useEffect(() => {
+    if (!active) return
+    let current = true
+    let checking = false
+    const refresh = async () => {
+      if (checking) return
+      checking = true
+      try { await autoSync(() => current) } finally { checking = false }
+    }
+    void refresh()
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => { current = false; window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh) }
+  }, [active])
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    const callback = url.searchParams.get('google_calendar')
+    if (!callback) return
+    if (callback === 'connected') setNotice('Google Calendar connected. Sync runs automatically while Calendar is active, or use Sync now.')
+    else setError('Google Calendar connection failed. Try connecting again with the original Google account.')
+    url.searchParams.delete('google_calendar')
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+    controlsRef.current?.closest('.workspace-view')?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  }, [])
+  async function act(action: 'connect' | 'sync' | 'disconnect') {
+    if (pending.current) return
+    pending.current = true
+    // Record before the request: failed attempts and manual syncs also delay auto sync.
+    if (action === 'sync') {
+      lastAttempt.current = Date.now()
+      try { window.localStorage.setItem('google-calendar-sync-attempt', String(lastAttempt.current)) } catch { /* Storage may be blocked or full. */ }
+    }
+    setBusy(action); setError(''); setNotice(''); setResult(null)
+    try {
+      if (action === 'connect') {
+        const { url } = await request<{ url: string }>('/api/integrations/google/connect', { method: 'POST' })
+        window.location.assign(url)
+      } else if (action === 'sync') {
+        setResult(await request<GoogleResult>('/api/integrations/google/sync', { method: 'POST' }))
+        setNotice('Sync completed.')
+      } else {
+        await request('/api/integrations/google/disconnect', { method: 'POST' })
+        setNotice('Disconnected. Existing events are kept. Reconnect with the same Google account.')
+      }
+    } catch (cause) {
+      setError(`${cause instanceof Error ? cause.message : 'Google Calendar operation failed'}.${action === 'sync' ? ' Some changes may already have been applied. Organizer data has been refreshed; retry or reconnect.' : ''}`)
+    } finally {
+      // A failed sync can still have committed local or remote changes.
+      if (action === 'sync') window.dispatchEvent(new Event('organizer-changed'))
+      await loadStatus()
+      pending.current = false; setBusy('')
+    }
+  }
+  return <div className="google-calendar" ref={controlsRef} aria-busy={Boolean(busy)}>
+    <div className="google-calendar-row">
+      <button className="google-primary" disabled={Boolean(busy) || !status?.configured} onClick={() => void act(status?.connected ? 'sync' : 'connect')}>{busy === 'sync' ? 'Syncing Google Calendar...' : busy === 'connect' ? 'Opening Google...' : status?.connected ? 'Sync now' : 'Connect Google Calendar'}</button>
+      <span>{status ? status.connected ? 'Primary calendar connected' : status.configured ? 'Not connected' : 'Google Calendar is not configured on the server' : statusError ? 'Status unavailable' : 'Loading Google Calendar status...'}</span>
+      {status?.connected && <><button disabled={Boolean(busy)} onClick={() => void act('connect')}>Reconnect</button><button disabled={Boolean(busy)} onClick={() => void act('disconnect')}>{busy === 'disconnect' ? 'Disconnecting...' : 'Disconnect'}</button></>}
+      {statusError && <button disabled={Boolean(busy)} onClick={() => void loadStatus()}>Retry status</button>}
+    </div>
+    <p>Last successful sync: {status?.lastSyncedAt ? new Date(status.lastSyncedAt).toLocaleString() : status ? 'Never' : 'Unknown'}</p>
+    {(error || statusError) && <p className="google-error" role="alert">{[error, statusError].filter(Boolean).join(' ')}</p>}
+    <div role="status" aria-live="polite">{notice && <p>{notice}</p>}{result && <p className="google-result">Imported {result.imported} / Exported {result.exported} / Deleted {result.deleted} / Conflicts {result.conflicts} / Skipped {result.skipped}</p>}</div>
+    <details><summary>Sync scope and limitations</summary>
+      <p>Primary Google calendar only. Two-way sync, including deletions, runs when Calendar opens or this tab/window returns to focus while Calendar is active, at most once every 2 minutes. Failed attempts also wait 2 minutes. Sync now bypasses the wait. Google wins conflicts.</p>
+      <p>New imports and exports: 30 days back to 366 days ahead. Existing linked events are checked outside this window. Only individual Google recurrence instances and existing local occurrences sync; recurrence rules and local recurrence roots are skipped, not generated. Deadlines and task due dates are not synced.</p>
+      {result && <><p>Window: {readableDate(result.window.start.slice(0, 10))} to {readableDate(result.window.end.slice(0, 10))}. Time zone: {result.timeZone}.</p>{Object.entries(result.skippedReasons).map(([reason, count]) => <p key={reason}>Skipped {reason.replace(/([A-Z])/g, ' $1').toLowerCase()}: {count}</p>)}{result.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}</>}
+    </details>
+  </div>
+}
+
+function EventScheduleFields({ item }: { item: EventItem }) {
+  const [allDay, setAllDay] = useState(item.all_day)
+  return <>
+    <label>Start date<input name="date" type="date" defaultValue={item.event_date} required /></label>
+    {!item.is_deadline && <label className="all-day-field"><input name="allDay" type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} />All day</label>}
+    {!allDay && <label>Start time<input name="startTime" type="time" defaultValue={item.event_time} required /></label>}
+    {!item.is_deadline && <>
+      <label>{allDay ? 'End date (exclusive)' : 'End date'}<input name="endDate" type="date" defaultValue={item.end_date ?? ''} required={allDay} /></label>
+      {!allDay && <label>End time<input name="endTime" type="time" defaultValue={item.end_time} required /></label>}
+      <label>Time zone<input name="timeZone" defaultValue={item.time_zone ?? ''} placeholder="e.g. America/New_York" /></label>
+      <p className="schedule-help">{allDay ? 'End date is the first day NOT included. A one-day event ends on the following date. ' : 'Blank end date means the start date. End must be after start. '}Use an IANA time zone or leave blank for the Google calendar default. All-day and multi-day local recurrence is not supported.</p>
+    </>}
+    <RecurrenceFields value={item.recurrence} interval={item.recurrence_interval} />
+  </>
+}
+
 function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean; initialEventId: number | null; openNotebook: (id: number) => void }) {
   const today = new Date()
   const [month, setMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
@@ -468,7 +597,14 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
     catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not save event') }
   }
   async function deleteEvent() { if (!selected || !window.confirm(`Delete ${selected.is_deadline ? 'deadline' : 'event'} “${selected.title}”? This cannot be undone.`)) return; try { await request(`/api/events/${selected.id}`, { method: 'DELETE' }); closeEvent(); await loadEvents(); window.dispatchEvent(new Event('organizer-changed')) } catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not delete event') } }
-  async function moveEvent(id: number, eventDate: string) { try { await request(`/api/events/${id}`, { method: 'PATCH', ...json({ eventDate }) }); await loadEvents() } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not move event') } }
+  async function moveEvent(id: number, eventDate: string) {
+    const item = events.find((event) => event.id === id)
+    if (!item) return
+    const offset = (Date.parse(`${eventDate}T00:00:00Z`) - Date.parse(`${item.event_date}T00:00:00Z`)) / 86400000
+    const endDate = item.end_date ? new Date(Date.parse(`${item.end_date}T00:00:00Z`) + offset * 86400000).toISOString().slice(0, 10) : null
+    try { await request(`/api/events/${id}`, { method: 'PATCH', ...json({ eventDate, endDate }) }); await loadEvents(); window.dispatchEvent(new Event('organizer-changed')) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not move event') }
+  }
   async function addComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return
     const form = event.currentTarget
@@ -493,7 +629,159 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
   }
   const firstCell = new Date(month.getFullYear(), month.getMonth(), 1 - ((month.getDay() + 6) % 7))
   const days = Array.from({ length: 42 }, (_, index) => new Date(firstCell.getFullYear(), firstCell.getMonth(), firstCell.getDate() + index))
-  return <main className="workspace calendar-workspace"><nav className="calendar-nav" aria-label="Calendar controls"><button type="button" aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button><h1>{month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h1><button type="button" onClick={() => setMonth(new Date(today.getFullYear(), today.getMonth(), 1))}>Today</button><button type="button" aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button></nav>{error && <p className="error" role="alert">{error}</p>}<section className="calendar-shell" aria-label={`${month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })} calendar`}><div className="weekday-row">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>{day}</span>)}</div><div className="month-grid">{days.map((day) => { const date = isoDate(day); const isToday = date === isoDate(today); const dayEvents = events.filter((item) => item.event_date === date); return <article className={`calendar-day${day.getMonth() !== month.getMonth() ? ' muted' : ''}${isToday ? ' today' : ''}`} key={date} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void moveEvent(Number(event.dataTransfer.getData('text/plain')), date) }}><button className="day-number" type="button" onClick={() => setAddingDate(date)} aria-label={`Add event on ${day.toLocaleDateString()}`} aria-current={isToday ? 'date' : undefined}>{day.getDate()}</button><div className="day-events">{dayEvents.map((item) => <button className={`calendar-event color-${item.is_deadline ? 'red' : item.color}${item.is_deadline ? ' deadline' : ''}`} type="button" draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData('text/plain', String(item.id))} onClick={() => void openEvent(item.id)}><time dateTime={`${item.event_date}T${item.event_time}`}>{readableTime(item.event_time)}{item.is_deadline ? '' : `–${readableTime(item.end_time)}`}</time><span>{item.title}</span>{item.recurrence_parent_id && <span aria-label="Recurring">↻</span>}</button>)}</div></article> })}</div></section><dialog ref={addDialogRef} className="event-dialog" aria-labelledby="add-event-title" onCancel={() => setAddingDate(null)}><form className="event-popup" onSubmit={(event) => void addEvent(event)}><header><div><h2 id="add-event-title">Add event</h2><p>{addingDate && readableDate(addingDate)}</p></div><button type="button" aria-label="Cancel" onClick={() => setAddingDate(null)}>×</button></header><label>Event<input name="title" autoFocus required placeholder="What are you planning?" /></label><div className="event-times"><label>Start<input name="startTime" type="time" defaultValue="09:00" required /></label><label>End<input name="endTime" type="time" defaultValue="10:00" required /></label></div><RecurrenceFields /><ColorPicker /><button className="event-submit" type="submit">Add event</button></form></dialog><dialog ref={dialogRef} className="card-dialog" aria-labelledby="event-dialog-title" onCancel={closeEvent}>{selected && <div className="dialog-layout"><section className="card-details"><button className="close" type="button" onClick={closeEvent} aria-label="Close event">×</button><div className="title-row"><span className={`circle color-${selected.color}`} /><div><input id="event-dialog-title" className="editable-title" defaultValue={selected.title} onBlur={(event) => { if (event.target.value.trim() && event.target.value.trim() !== selected.title) void saveEvent({ title: event.target.value.trim() }) }} aria-label="Event title" /><p>{selected.is_deadline ? 'Deadline' : 'Scheduled event'}</p></div></div>{dialogError && <p className="dialog-error" role="alert">{dialogError}</p>}{!selected.is_deadline && <ColorPicker name="event-color" value={selected.color} onChange={(color) => void saveEvent({ color })} />}<form className="schedule-block" onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); void saveEvent({ eventDate: String(data.get('date')), eventTime: String(data.get('startTime')), endTime: String(data.get('endTime')), recurrence: String(data.get('recurrence')), recurrenceInterval: Number(data.get('recurrenceInterval')) }) }}><label>Date<input name="date" type="date" defaultValue={selected.event_date} required /></label><label>Start time<input name="startTime" type="time" defaultValue={selected.event_time} required /></label>{!selected.is_deadline && <label>End time<input name="endTime" type="time" defaultValue={selected.end_time} required /></label>}<RecurrenceFields value={selected.recurrence} interval={selected.recurrence_interval} /><button type="submit">Save schedule</button></form><section className="detail-section"><h3>Description</h3><RecordDescription key={selected.id} value={selected.description} label="Event description" options={{ notebooks, events: [] }} onSave={(description) => void saveEvent({ description })} openNotebook={openNotebook} /></section><button className="danger-action" type="button" onClick={() => void deleteEvent()}>Delete {selected.is_deadline ? 'deadline' : 'event'}</button></section><aside className="activity"><header><h3>Comments and activity</h3></header><form className="comment-form" onSubmit={(event) => void addComment(event)}><div className="comment-composer"><textarea name="comment" rows={3} placeholder="Add a comment…" aria-label="Comment" onPaste={(event) => void pasteCommentImage(event)} /><div className="comment-toolbar"><div className="comment-tools" aria-label="Comment tools"><button type="button" className="comment-tool" aria-label="Bold" title="Bold" disabled><strong>B</strong></button><button type="button" className="comment-tool comment-tool-italic" aria-label="Italic" title="Italic" disabled><em>I</em></button><button type="button" className="comment-tool comment-tool-underline" aria-label="Underline" title="Underline" disabled><u>U</u></button><span className="comment-toolbar-divider" aria-hidden="true" /><label className="comment-attach" title="Attach image or file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg><input type="file" onChange={(event) => { void attachCommentFile(event.target.files); event.target.value = '' }} aria-label="Attach image or file" /></label></div><button className="comment-submit" type="submit">Post</button></div></div>{commentImage && <div className="comment-image-preview"><img src={commentImage} alt="Pasted attachment preview" /><button type="button" onClick={() => setCommentImage(null)} aria-label="Remove pasted image">×</button></div>}{commentAttachment && <div className="comment-file-preview">{commentAttachment.mimeType.startsWith('image/') ? <img src={commentAttachment.data} alt={commentAttachment.name + ' preview'} /> : <span className="file-mark">FILE</span>}<span className="comment-file-details"><strong>{commentAttachment.name}</strong><small>{Math.max(1, Math.round(commentAttachment.size / 1024))} KB</small></span><button type="button" onClick={() => setCommentAttachment(null)} aria-label="Remove attached file">×</button></div>}</form>{selected.comments.map((comment) => <div className="activity-item" key={comment.id}><span className="avatar">C</span><p><strong>You</strong>{comment.body && <> {comment.body}</>}{comment.image && <img src={comment.image} alt={comment.body || 'Comment attachment'} />}{comment.file_data && (comment.file_mime_type?.startsWith('image/') ? <img src={comment.file_data} alt={comment.file_name || 'Comment attachment'} /> : <a className="comment-file-link" href={comment.file_data} download={comment.file_name || 'attachment'}><span className="file-mark">FILE</span><span>{comment.file_name || 'Attachment'}</span></a>)}<small>{new Date(comment.created_at.replace(' ', 'T') + 'Z').toLocaleString()}</small></p></div>)}</aside></div>}</dialog></main>
+  return <main className="workspace calendar-workspace">
+<GoogleCalendarControls active={active} />
+<nav className="calendar-nav" aria-label="Calendar controls">
+<button type="button" aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button>
+<h1>
+{month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+</h1>
+<button type="button" onClick={() => setMonth(new Date(today.getFullYear(), today.getMonth(), 1))}>Today</button>
+<button type="button" aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button>
+</nav>
+{error && <p className="error" role="alert">
+{error}
+</p>}
+<section className="calendar-shell" aria-label={`${month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })} calendar`}>
+<div className="weekday-row">
+{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>
+{day}
+</span>)}
+</div>
+<div className="month-grid">
+{days.map((day) => { const date = isoDate(day); const isToday = date === isoDate(today); const dayEvents = events.filter((item) => item.event_date === date || item.event_date < date && Boolean(item.end_date) && (item.end_date! > date || item.end_date === date && !item.all_day && item.end_time > '00:00')); return <article className={`calendar-day${day.getMonth() !== month.getMonth() ? ' muted' : ''}${isToday ? ' today' : ''}`} key={date} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void moveEvent(Number(event.dataTransfer.getData('text/plain')), date) }}>
+<button className="day-number" type="button" onClick={() => setAddingDate(date)} aria-label={`Add event on ${day.toLocaleDateString()}`} aria-current={isToday ? 'date' : undefined}>
+{day.getDate()}
+</button>
+<div className="day-events">
+{dayEvents.map((item) => <button className={`calendar-event color-${item.is_deadline ? 'red' : item.color}${item.is_deadline ? ' deadline' : ''}`} type="button" draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData('text/plain', String(item.id))} onClick={() => void openEvent(item.id)}>
+<time dateTime={item.all_day ? date : `${date}T${date === item.event_date ? item.event_time : '00:00'}`}>
+{item.all_day ? 'All day' : date !== item.event_date ? 'Continues' : readableTime(item.event_time)}
+</time>
+<span>
+{item.all_day && <span className="sr-only">All day: </span>}{item.title}
+</span>
+{item.recurrence_parent_id && <span aria-label="Recurring">↻</span>}
+</button>)}
+</div>
+</article> })}
+</div>
+</section>
+<dialog ref={addDialogRef} className="event-dialog" aria-labelledby="add-event-title" onCancel={() => setAddingDate(null)}>
+<form className="event-popup" onSubmit={(event) => void addEvent(event)}>
+<header>
+<div>
+<h2 id="add-event-title">Add event</h2>
+<p>
+{addingDate && readableDate(addingDate)}
+</p>
+</div>
+<button type="button" aria-label="Cancel" onClick={() => setAddingDate(null)}>×</button>
+</header>
+<label>Event<input name="title" autoFocus required placeholder="What are you planning?" />
+</label>
+<div className="event-times">
+<label>Start<input name="startTime" type="time" defaultValue="09:00" required />
+</label>
+<label>End<input name="endTime" type="time" defaultValue="10:00" required />
+</label>
+</div>
+<RecurrenceFields />
+<ColorPicker />
+<button className="event-submit" type="submit">Add event</button>
+</form>
+</dialog>
+<dialog ref={dialogRef} className="card-dialog" aria-labelledby="event-dialog-title" onCancel={closeEvent}>
+{selected && <div className="dialog-layout">
+<section className="card-details">
+<button className="close" type="button" onClick={closeEvent} aria-label="Close event">×</button>
+<div className="title-row">
+<span className={`circle color-${selected.color}`} />
+<div>
+<input id="event-dialog-title" className="editable-title" defaultValue={selected.title} onBlur={(event) => { if (event.target.value.trim() && event.target.value.trim() !== selected.title) void saveEvent({ title: event.target.value.trim() }) }} aria-label="Event title" />
+<p>
+{selected.is_deadline ? 'Deadline' : 'Scheduled event'}
+</p>
+</div>
+</div>
+{dialogError && <p className="dialog-error" role="alert">
+{dialogError}
+</p>}{!selected.is_deadline && <ColorPicker name="event-color" value={selected.color} onChange={(color) => void saveEvent({ color })} />}
+<form className="schedule-block" key={`${selected.id}-${selected.event_date}-${selected.end_date}-${selected.all_day}-${selected.event_time}-${selected.end_time}-${selected.time_zone}`} onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); const allDay = data.has('allDay'); void saveEvent({ eventDate: String(data.get('date')), eventTime: allDay ? '00:00' : String(data.get('startTime')), ...(!selected.is_deadline && { endTime: allDay ? '00:00' : String(data.get('endTime')), endDate: data.get('endDate') || null, allDay, timeZone: String(data.get('timeZone') ?? '').trim() || null }), recurrence: String(data.get('recurrence')), recurrenceInterval: Number(data.get('recurrenceInterval')) }) }}>
+<EventScheduleFields item={selected} />
+<button type="submit">Save schedule</button>
+</form>
+<section className="detail-section">
+<h3>Description</h3>
+<RecordDescription key={selected.id} value={selected.description} label="Event description" options={{ notebooks, events: [] }} onSave={(description) => void saveEvent({ description })} openNotebook={openNotebook} />
+</section>
+<button className="danger-action" type="button" onClick={() => void deleteEvent()}>Delete {selected.is_deadline ? 'deadline' : 'event'}
+</button>
+</section>
+<aside className="activity">
+<header>
+<h3>Comments and activity</h3>
+</header>
+<form className="comment-form" onSubmit={(event) => void addComment(event)}>
+<div className="comment-composer">
+<textarea name="comment" rows={3} placeholder="Add a comment…" aria-label="Comment" onPaste={(event) => void pasteCommentImage(event)} />
+<div className="comment-toolbar">
+<div className="comment-tools" aria-label="Comment tools">
+<button type="button" className="comment-tool" aria-label="Bold" title="Bold" disabled>
+<strong>B</strong>
+</button>
+<button type="button" className="comment-tool comment-tool-italic" aria-label="Italic" title="Italic" disabled>
+<em>I</em>
+</button>
+<button type="button" className="comment-tool comment-tool-underline" aria-label="Underline" title="Underline" disabled>
+<u>U</u>
+</button>
+<span className="comment-toolbar-divider" aria-hidden="true" />
+<label className="comment-attach" title="Attach image or file">
+<svg viewBox="0 0 24 24" aria-hidden="true">
+<path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" />
+</svg>
+<input type="file" onChange={(event) => { void attachCommentFile(event.target.files); event.target.value = '' }} aria-label="Attach image or file" />
+</label>
+</div>
+<button className="comment-submit" type="submit">Post</button>
+</div>
+</div>
+{commentImage && <div className="comment-image-preview">
+<img src={commentImage} alt="Pasted attachment preview" />
+<button type="button" onClick={() => setCommentImage(null)} aria-label="Remove pasted image">×</button>
+</div>}{commentAttachment && <div className="comment-file-preview">
+{commentAttachment.mimeType.startsWith('image/') ? <img src={commentAttachment.data} alt={commentAttachment.name + ' preview'} /> : <span className="file-mark">FILE</span>}
+<span className="comment-file-details">
+<strong>
+{commentAttachment.name}
+</strong>
+<small>
+{Math.max(1, Math.round(commentAttachment.size / 1024))} KB</small>
+</span>
+<button type="button" onClick={() => setCommentAttachment(null)} aria-label="Remove attached file">×</button>
+</div>}
+</form>
+{selected.comments.map((comment) => <div className="activity-item" key={comment.id}>
+<span className="avatar">C</span>
+<p>
+<strong>You</strong>
+{comment.body && <> {comment.body}
+</>}{comment.image && <img src={comment.image} alt={comment.body || 'Comment attachment'} />}{comment.file_data && (comment.file_mime_type?.startsWith('image/') ? <img src={comment.file_data} alt={comment.file_name || 'Comment attachment'} /> : <a className="comment-file-link" href={comment.file_data} download={comment.file_name || 'attachment'}>
+<span className="file-mark">FILE</span>
+<span>
+{comment.file_name || 'Attachment'}
+</span>
+</a>)}
+<small>
+{new Date(comment.created_at.replace(' ', 'T') + 'Z').toLocaleString()}
+</small>
+</p>
+</div>)}
+</aside>
+</div>}
+</dialog>
+</main>
 }
 
 function NotebooksApp({ active, initialNotebookId, openCard, openEvent }: { active: boolean; initialNotebookId: number | null; openCard: (id: number) => void; openEvent: (id: number) => void }) {

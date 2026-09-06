@@ -2,6 +2,7 @@ import express from 'express'
 import { timingSafeEqual } from 'node:crypto'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { createOrganizerMcpServer } from './mcp.js'
+import { createGoogleIntegration } from './google-sync.js'
 import {
   attachmentJson,
   cardInclude,
@@ -10,6 +11,7 @@ import {
   commentJson,
   ensureRecurringEvents,
   eventJson,
+  eventOverlapWhere,
   getCardSummary,
   moveCard,
   nextCardPosition,
@@ -128,6 +130,7 @@ await seedDefaultBoard()
 
 const app = express()
 app.use(express.json({ limit: '10mb' }))
+app.use('/api/integrations/google', createGoogleIntegration(prisma).router)
 
 const mcpApiKey = process.env.MCP_API_KEY?.trim()
 app.use('/mcp', (request, response, next) => {
@@ -223,6 +226,8 @@ app.get('/api/link-options', async (_request, response) => {
 
 app.get('/api/today', async (_request, response) => {
   const today = new Date().toLocaleDateString('en-CA')
+  const tomorrow = new Date(`${today}T00:00:00Z`)
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
   await ensureRecurringEvents(today)
   const include = cardInclude
   const priorityOrder = { high: 0, medium: 1, low: 2, none: 3 }
@@ -233,7 +238,7 @@ app.get('/api/today', async (_request, response) => {
     prisma.card.findMany({ where: { dueDate: { lt: today }, listId: { notIn: doneListIds } }, include }),
     prisma.card.findMany({ where: { dueDate: today, listId: { notIn: doneListIds } }, include }),
     prisma.card.findMany({ where: { listId: { in: doingListIds }, OR: [{ dueDate: null }, { dueDate: { gt: today } }] }, orderBy: { position: 'asc' }, include }),
-    prisma.event.findMany({ where: { eventDate: today }, orderBy: [{ eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] }),
+    prisma.event.findMany({ where: eventOverlapWhere(today, tomorrow.toISOString().slice(0, 10)), orderBy: [{ eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] }),
   ])
   overdue.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || priorityOrder[a.priority] - priorityOrder[b.priority])
   dueToday.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority] || a.position - b.position)
@@ -263,7 +268,7 @@ app.get('/api/events', async (request, response) => {
   const startDate = first.toISOString().slice(0, 10)
   const endDate = end.toISOString().slice(0, 10)
   await ensureRecurringEvents(endDate)
-  const events = await prisma.event.findMany({ where: { eventDate: { gte: startDate, lt: endDate } }, orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] })
+  const events = await prisma.event.findMany({ where: eventOverlapWhere(startDate, endDate), orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] })
   response.json(events.map(eventJson))
 })
 
@@ -286,6 +291,20 @@ app.get('/api/events/:id', async (request, response) => {
   response.json({ ...eventJson(event), comments: event.comments.map(commentJson), notebooks: event.notebookLinks.map(({ notebook }) => notebook) })
 })
 
+function eventExtent(body, current = {}) {
+  const endDate = body.endDate === undefined ? current.endDate ?? null : body.endDate
+  const allDay = body.allDay === undefined ? current.allDay ?? false : body.allDay
+  const timeZone = body.timeZone === undefined ? current.timeZone ?? null : body.timeZone
+  if (endDate !== null && (typeof endDate !== 'string' || !validDate(endDate))) return null
+  if (typeof allDay !== 'boolean' || timeZone !== null && typeof timeZone !== 'string') return null
+  try { if (timeZone !== null) new Intl.DateTimeFormat('en', { timeZone }).format() } catch { return null }
+  const startDate = body.eventDate ?? current.eventDate
+  const startTime = body.eventTime ?? current.eventTime
+  const endTime = body.endTime ?? current.endTime
+  if (allDay ? !endDate || endDate <= startDate : `${endDate || startDate}T${endTime}` <= `${startDate}T${startTime}`) return null
+  return { endDate, allDay, timeZone }
+}
+
 app.post('/api/events', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   const eventDate = typeof request.body.eventDate === 'string' ? request.body.eventDate : ''
@@ -297,10 +316,12 @@ app.post('/api/events', async (request, response) => {
   if (!title) return response.status(400).json({ error: 'title is required' })
   if (!validDate(eventDate)) return response.status(400).json({ error: 'valid event date is required' })
   if (!timePattern.test(eventTime) || !timePattern.test(endTime)) return response.status(400).json({ error: 'valid event times are required' })
-  if (endTime <= eventTime) return response.status(400).json({ error: 'end time must be after start time' })
+  const extent = eventExtent(request.body)
+  if (!extent) return response.status(400).json({ error: 'valid endDate, allDay, timeZone and positive event duration required' })
   if (!organizerColors.includes(color)) return response.status(400).json({ error: 'valid color is required' })
   if (!recurrences.includes(recurrence) || !Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365) return response.status(400).json({ error: 'valid recurrence is required' })
-  const event = await prisma.event.create({ data: { title, eventDate, eventTime, endTime, color, recurrence, recurrenceInterval } })
+  if (recurrence !== 'none' && (extent.allDay || extent.endDate && extent.endDate !== eventDate)) return response.status(400).json({ error: 'multi-day and all-day recurrence is not supported' })
+  const event = await prisma.event.create({ data: { title, eventDate, eventTime, endTime, color, recurrence, recurrenceInterval, ...extent } })
   response.status(201).json(eventJson(event))
 })
 
@@ -339,7 +360,9 @@ app.patch('/api/events/:id', async (request, response) => {
   if (recurrenceInterval !== null && (!Number.isInteger(recurrenceInterval) || recurrenceInterval < 1 || recurrenceInterval > 365)) return response.status(400).json({ error: 'valid recurrence interval is required' })
   const nextStart = eventTime ?? current.eventTime
   const nextEnd = current.isDeadline ? nextStart : (endTime ?? current.endTime)
-  if (!current.isDeadline && nextStart >= nextEnd) return response.status(400).json({ error: 'end time must be after start time' })
+  const extent = current.isDeadline ? {} : eventExtent(request.body, current)
+  if (!extent) return response.status(400).json({ error: 'valid endDate, allDay, timeZone and positive event duration required' })
+  if ((recurrence ?? current.recurrence) !== 'none' && (extent.allDay || extent.endDate && extent.endDate !== (eventDate ?? current.eventDate))) return response.status(400).json({ error: 'multi-day and all-day recurrence is not supported' })
   const updated = await prisma.$transaction(async (tx) => {
     if (current.recurrenceParentId === null && (eventDate !== null || eventTime !== null || endTime !== null || recurrence !== null || recurrenceInterval !== null)) {
       await tx.event.deleteMany({ where: { recurrenceParentId: current.id } })
@@ -347,6 +370,7 @@ app.patch('/api/events/:id', async (request, response) => {
     return tx.event.update({
       where: { id },
       data: {
+        ...extent,
         ...(title !== null && { title }),
         ...(description !== null && { description }),
         ...(eventDate !== null && { eventDate }),

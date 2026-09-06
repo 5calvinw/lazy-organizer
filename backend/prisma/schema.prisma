@@ -85,6 +85,9 @@ model Event {
   eventDate           String             @map("event_date")
   eventTime           String             @default("09:00") @map("event_time")
   endTime             String             @default("10:00") @map("end_time")
+  endDate             String?            @map("end_date")
+  allDay              Boolean            @default(false) @map("all_day")
+  timeZone            String?            @map("time_zone")
   isDeadline          Int                @default(0) @map("is_deadline")
   color               String             @default("blue")
   recurrence          String             @default("none")
@@ -96,9 +99,35 @@ model Event {
   comments            EventComment[]
   cardLinks           CardEventLink[]
   notebookLinks       EventNotebookLink[]
+  googleMapping       GoogleEventMapping?
 
   @@unique([recurrenceParentId, eventDate, eventTime], map: "event_recurrence_occurrence")
   @@map("events")
+}
+
+model GoogleIntegration {
+  id             Int     @id @default(1)
+  tokens         String?
+  calendarId     String?
+  lastSyncedAt   String?
+  oauthState     String?
+  oauthExpiresAt Float?
+  lockOwner      String?
+  lockUntil      Float   @default(0)
+}
+
+model GoogleEventMapping {
+  id            Int     @id @default(autoincrement())
+  calendarId    String
+  remoteId      String
+  eventId       Int?    @unique
+  localSnapshot String?
+  remoteEtag    String?
+  pending       String?
+  tombstone     Boolean @default(false)
+  event         Event?  @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@unique([calendarId, remoteId])
 }
 
 model EventComment {

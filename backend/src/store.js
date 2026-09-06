@@ -40,6 +40,9 @@ export function eventJson(event) {
     event_date: event.eventDate,
     event_time: event.eventTime,
     end_time: event.endTime,
+    end_date: event.endDate,
+    all_day: event.allDay,
+    time_zone: event.timeZone,
     is_deadline: event.isDeadline,
     color: event.color,
     recurrence: event.recurrence,
@@ -164,8 +167,17 @@ export async function syncCardDeadline(tx, { cardId, title, description, color, 
   })
 }
 
-export async function ensureRecurringEvents(endDate) {
-  await prisma.$transaction(async (tx) => {
+export function eventOverlapWhere(startDate, endDate) {
+  return { eventDate: { lt: endDate }, OR: [{ eventDate: { gte: startDate } }, { endDate: { gt: startDate } }, { allDay: false, endDate: startDate, endTime: { gt: '00:00' } }] }
+}
+
+export async function ensureRecurringEvents(endDate, db = prisma) {
+  await db.$transaction(async (tx) => {
+    const tombstones = await tx.googleEventMapping.findMany({ where: { tombstone: true, localSnapshot: { not: null } }, select: { localSnapshot: true } })
+    const deletedOccurrences = new Set(tombstones.map(({ localSnapshot }) => {
+      const event = JSON.parse(localSnapshot)
+      return `${event.recurrenceParentId}/${event.eventDate}/${event.eventTime}`
+    }))
     const roots = await tx.event.findMany({ where: { recurrence: { not: 'none' }, recurrenceParentId: null } })
     for (const root of roots) {
       const latest = await tx.event.findFirst({
@@ -177,6 +189,7 @@ export async function ensureRecurringEvents(endDate) {
       while (occurrenceDate < endDate) {
         occurrenceDate = nextOccurrence(occurrenceDate, root.recurrence, root.recurrenceInterval)
         if (!occurrenceDate || occurrenceDate > endDate) break
+        if (deletedOccurrences.has(`${root.id}/${occurrenceDate}/${root.eventTime}`)) continue
         await tx.event.upsert({
           where: { recurrenceParentId_eventDate_eventTime: { recurrenceParentId: root.id, eventDate: occurrenceDate, eventTime: root.eventTime } },
           update: {},
@@ -186,6 +199,7 @@ export async function ensureRecurringEvents(endDate) {
             eventDate: occurrenceDate,
             eventTime: root.eventTime,
             endTime: root.endTime,
+            timeZone: root.timeZone,
             isDeadline: root.isDeadline,
             color: root.color,
             recurrence: 'none',

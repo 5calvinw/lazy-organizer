@@ -12,6 +12,43 @@ The backend listens on `http://127.0.0.1:3000`. Its MCP endpoint is `http://127.
 
 The backend uses Prisma with SQLite. Set `DATABASE_URL=file:../data/organizer.db` in `backend/.env`; `npm start` synchronizes the schema automatically. Use `npm run db:studio` from `backend` to inspect or edit data in Prisma Studio.
 
+## Google Calendar
+
+The Calendar view has a **Connect Google Calendar** button. After authorization, it automatically syncs both directions with your primary Google calendar when you open Calendar or return to the tab with Calendar active. Automatic attempts are throttled to once every two minutes, including failed attempts. **Sync now** bypasses the wait. Syncs do not overlap, and authorization is never started automatically.
+
+Register this exact authorized redirect URI on your Google Cloud Web OAuth client:
+
+```text
+https://organizer.calvinwu.com/api/integrations/google/callback
+```
+
+Enable the Google Calendar API and configure these values in `backend/.env` (or your deployment's backend environment):
+
+```dotenv
+GOOGLE_CLIENT_ID=your-web-client-id
+GOOGLE_CLIENT_SECRET=your-web-client-secret
+GOOGLE_TOKEN_ENCRYPTION_KEY=your-base64-encoded-32-byte-key
+GOOGLE_REDIRECT_URI=https://organizer.calvinwu.com/api/integrations/google/callback
+GOOGLE_APP_ORIGIN=https://organizer.calvinwu.com
+```
+
+Generate the encryption key with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"`. Keep this key stable and private; changing it makes existing stored Google tokens unreadable. Never put these secrets in frontend `VITE_*` variables. `backend/.env.example` lists configuration placeholders.
+
+Back up SQLite before deploying. Restart/rebuild the backend and frontend after configuring credentials; the backend startup runs `prisma db push` to add the integration tables and event fields. Docker Compose already loads `backend/.env`.
+
+Cloudflare Access must protect the entire domain, including `/api/integrations/google/*`. Keep direct backend access private. OAuth callbacks require HTTPS for their secure cookie. There is no additional application login, and this integration is a single shared Google connection for the organizer. If your OAuth consent screen is in external Testing mode, Google can expire refresh tokens after seven days; reconnect or configure the appropriate production publishing status.
+
+### Sync Behavior
+
+- Creates, edits, and deletions sync on automatic or manual attempts, including local changes made through MCP. If both sides changed since the previous sync, Google wins; concurrent edits made during a sync are protected and reported for retry. This is not a continuous background timer; opening Calendar or returning to the tab triggers the automatic check.
+- New events are synced from 30 days ago through 366 days ahead. Previously mapped events continue to be checked outside that window.
+- Title, description, dates, times, and timezone sync. All-day and multi-day events are supported; all-day end dates are exclusive. Existing Google attendees, reminders, location, and other metadata are preserved but not exposed locally.
+- Recurring Google instances and already-generated local occurrences sync individually. Recurrence rules and local recurrence roots are not synced. Deadlines and card due dates are not synced. Unsupported Google event types and sub-minute times are skipped, with counts displayed in the UI.
+- Sync is resumable, not an all-or-nothing transaction. If a request fails, some changes may already have applied; retry the button to continue. Persistent mappings and conditional Google writes protect against duplicate exports and overwriting newer remote edits.
+- Disconnect removes stored credentials but keeps events and mappings. Reconnect the same account/calendar to resume. Disconnect does not revoke Google's consent; remove the app in your Google account settings to revoke access entirely.
+
+Backend integration tests use mocked Google responses and disposable SQLite databases: run `npm test` from `backend`. Live Google authorization must be verified on your configured domain.
+
 ## Connect Hermes
 
 Copy the same key into `~/.hermes/.env`:

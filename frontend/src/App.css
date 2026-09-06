@@ -268,7 +268,25 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .color-swatch.color-orange { background: #faa53d; }
 .color-swatch.color-gray { background: #6b778c; }
 
-.calendar-workspace { padding: 1rem; }
+.calendar-workspace { padding: 1rem; display: flex; flex-direction: column; }
+.calendar-workspace > .calendar-shell { flex: 1 0 25rem; height: auto; min-height: 25rem; }
+.calendar-workspace { overflow-y: auto; }
+.google-calendar { flex: 0 0 auto; padding: .4rem .25rem .65rem; border-bottom: 1px solid rgba(36,34,29,.2); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
+.google-calendar-row { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .75rem; }
+.google-calendar button { min-height: 2.25rem; padding: .4rem .65rem; border: 1px solid rgba(36,34,29,.3); border-radius: .35rem; color: #24221d; background: transparent; font: inherit; cursor: pointer; }
+.google-calendar .google-primary { color: #f3ead7; background: #24221d; }
+.google-calendar button:disabled { opacity: .55; cursor: not-allowed; }
+.google-calendar button:hover:not(:disabled) { background: #ded3bd; }
+.google-calendar .google-primary:hover:not(:disabled) { background: #49443b; }
+.google-calendar :is(button, summary):focus-visible { outline: 2px solid #802c26; outline-offset: 2px; }
+.google-calendar p { margin: .3rem 0 0; }
+.google-calendar summary { width: fit-content; padding: .3rem 0; cursor: pointer; }
+.google-calendar details[open] { max-height: 12rem; overflow-y: auto; }
+.google-error { color: #802c26; font-weight: 600; }
+.google-result { font-variant-numeric: tabular-nums; }
+.schedule-block .all-day-field { display: flex; align-items: center; min-height: 2.5rem; }
+.schedule-block .all-day-field input { width: 1rem; height: 1rem; }
+.schedule-help { grid-column: 1 / -1; margin: 0; color: #bdc2ca; font-size: .78rem; line-height: 1.5; }
 .calendar-nav { min-height: 3.5rem; display: flex; align-items: center; justify-content: center; gap: .4rem; }
 .calendar-nav h1 { min-width: 12rem; text-align: center; }
 .calendar-nav button { min-height: 2.25rem; padding: .4rem; border: 0; color: #24221d; background: transparent; font: inherit; cursor: pointer; }
@@ -589,7 +607,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .month-grid { height: auto; min-height: calc(100dvh - 10rem); }
   .calendar-day { min-height: 5.2rem; padding: .2rem; }
   .calendar-event { padding: .2rem; display: block; font-size: .65rem; }
-  .calendar-event time { display: none; }
+  .calendar-event time { display: block; font-size: .6rem; overflow: hidden; text-overflow: ellipsis; }
   .calendar-event span { display: block; text-overflow: ellipsis; overflow: hidden; }
   .event-times, .recurrence-fields { grid-template-columns: 1fr 1fr; }
   .notebook-editor header input { min-width: 0; font-size: 2rem; }
