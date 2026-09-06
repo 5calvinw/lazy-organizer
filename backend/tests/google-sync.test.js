@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { PrismaClient } from '@prisma/client'
 import express from 'express'
 import { createGoogleIntegration, tokenCipher, remoteEvent } from '../src/google-sync.js'
-import { ensureRecurringEvents, eventOverlapWhere } from '../src/store.js'
+import { ensureRecurringEvents, eventOverlapWhere, syncCardDeadline } from '../src/store.js'
 
 const env = { GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'secret', GOOGLE_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64') }
 const cipher = tokenCipher(env.GOOGLE_TOKEN_ENCRYPTION_KEY)
@@ -72,6 +72,7 @@ after(async () => {
 beforeEach(async () => {
   await db.googleEventMapping.deleteMany()
   await db.event.deleteMany()
+  await db.list.deleteMany()
   await db.googleIntegration.deleteMany()
   await db.googleIntegration.create({ data: { id: 1, tokens: cipher.encrypt({ access_token: 'access', refresh_token: 'refresh', expires_at: now() + 3600000 }) } })
   remotes = new Map(); sequence = 0; loseInsert = false; beforeGet = null; racePatch = false; losePatch = false
@@ -147,14 +148,103 @@ test('does not overwrite local edits made during remote reads; missing window it
   assert.equal((await db.event.findFirst()).title, 'Racing local edit')
   assert.equal(result.deleted, 0)
 })
-test('remote deletion removes local row; unsupported deadlines and roots are counted', async () => {
+test('remote deletion removes local row; deadlines export and roots are counted', async () => {
   remotes.set('r', remote('r'))
   await integration.sync()
   remotes.set('r', { id: 'r', status: 'cancelled', etag: '"deleted"' })
   assert.equal((await integration.sync()).deleted, 1)
-  await db.event.create({ data: { title: 'Deadline', eventDate: '2026-09-07', isDeadline: 1 } })
+  await db.event.create({ data: { title: 'Deadline', eventDate: '2026-09-07', isDeadline: 1, endTime: '09:00' } })
   await db.event.create({ data: { title: 'Root', eventDate: '2026-09-07', recurrence: 'daily' } })
-  assert.equal((await integration.sync()).skippedReasons.unsupportedLocalEvent, 2)
+  const result = await integration.sync()
+  assert.equal(result.skippedReasons.unsupportedLocalEvent, 1)
+  assert.equal(result.exported, 1)
+})
+
+test('deadline insert and PATCH retries round-trip without duplicates or churn, including midnight rollover', async () => {
+  const event = await db.event.create({ data: { title: 'Deadline', eventDate: '2026-09-07', eventTime: '23:59', endTime: '23:59', isDeadline: 1 } })
+  loseInsert = true
+  await assert.rejects(integration.sync())
+  const [id] = remotes.keys()
+  assert.equal(remotes.get(id).end.dateTime, '2026-09-08T00:00:00Z')
+  assert.equal(remotes.get(id).extendedProperties.private.lazyOrganizerDeadline, '1')
+  await integration.sync()
+  assert.equal(remotes.size, 1)
+  assert.equal((await db.googleEventMapping.findFirst()).pending, null)
+  await db.event.update({ where: { id: event.id }, data: { title: 'Edited deadline' } })
+  losePatch = true
+  await assert.rejects(integration.sync())
+  await integration.sync()
+  const result = await integration.sync()
+  assert.equal(result.exported, 0); assert.equal(result.imported, 0)
+  assert.equal((await db.event.findFirst()).endTime, '23:59')
+  await db.event.delete({ where: { id: event.id } })
+  assert.equal((await integration.sync()).deleted, 1)
+})
+
+test('marked Google deadlines import as zero-duration deadlines and ordinary edits retain identity', async () => {
+  remotes.set('d', { ...remote('d'), extendedProperties: { private: { lazyOrganizerDeadline: '1' } } })
+  await integration.sync()
+  let event = await db.event.findFirst()
+  assert.equal(event.isDeadline, 1); assert.equal(event.endTime, event.eventTime); assert.equal(event.endDate, null)
+  remotes.set('d', { ...remote('d', 'Renamed'), start: { date: '2026-09-09' }, end: { date: '2026-09-10' } })
+  await integration.sync()
+  event = await db.event.findFirst()
+  assert.equal(event.isDeadline, 1); assert.equal(event.allDay, false); assert.equal(event.eventTime, '00:00'); assert.equal(event.endTime, '00:00')
+  assert.equal((await integration.sync()).exported, 0)
+})
+
+test('Google task deadline moves and deletion reconcile only matching linked due dates, not task text', async () => {
+  const list = await db.list.create({ data: { title: 'Tasks', position: 0 } })
+  const card = await db.card.create({ data: { listId: list.id, title: 'Task', description: 'Task details', position: 0, dueDate: '2026-09-07' } })
+  await db.$transaction((tx) => syncCardDeadline(tx, { cardId: card.id, title: card.title, description: card.description, color: 'blue', dueDate: card.dueDate, recurrence: 'none', recurrenceInterval: 1 }))
+  const event = await db.event.findFirst()
+  const mention = await db.card.create({ data: { listId: list.id, title: 'Mention', position: 1, dueDate: '2026-09-20', eventLinks: { create: { eventId: event.id } } } })
+  await integration.sync()
+  const [id] = remotes.keys()
+  remotes.set(id, { ...remote(id, 'Google deadline title'), start: { dateTime: '2026-09-10T12:00:00Z' }, end: { dateTime: '2026-09-10T13:00:00Z' } })
+  await integration.sync()
+  const moved = await db.card.findUnique({ where: { id: card.id } })
+  assert.equal(moved.dueDate, '2026-09-10'); assert.equal(moved.title, 'Task'); assert.equal(moved.description, 'Task details')
+  const deadline = await db.event.findFirst()
+  assert.equal(deadline.id, event.id); assert.equal(deadline.isDeadline, 1); assert.equal(deadline.endTime, '12:00')
+  assert.equal((await integration.sync()).exported, 0)
+  remotes.set(id, { id, status: 'cancelled', etag: 'deleted' })
+  await integration.sync()
+  assert.equal((await db.card.findUnique({ where: { id: card.id } })).dueDate, null)
+  assert.equal((await db.card.findUnique({ where: { id: mention.id } })).dueDate, '2026-09-20')
+  assert.equal(await db.event.count(), 0)
+  assert.equal((await integration.sync()).exported, 0)
+})
+
+test('recurring deadline roots export individually, recover inserts and preserve recurrence on pull', async () => {
+  const root = await db.event.create({ data: { title: 'Recurring deadline', eventDate: '2026-09-06', endTime: '09:00', isDeadline: 1, recurrence: 'daily', recurrenceInterval: 2 } })
+  await ensureRecurringEvents('2026-09-08', db)
+  loseInsert = true
+  await assert.rejects(integration.sync())
+  const result = await integration.sync()
+  assert.equal(result.skipped, 0)
+  assert.equal(remotes.size, 2)
+  const mapping = await db.googleEventMapping.findUnique({ where: { eventId: root.id } })
+  const google = remotes.get(mapping.remoteId)
+  assert.equal(google.recurrence, undefined)
+  assert.equal(google.end.dateTime, '2026-09-06T09:01:00Z')
+  remotes.set(mapping.remoteId, { ...google, summary: 'Google title', etag: 'renamed' })
+  assert.equal((await integration.sync()).imported, 1)
+  const saved = await db.event.findUnique({ where: { id: root.id } })
+  assert.equal(saved.title, 'Google title'); assert.equal(saved.recurrence, 'daily'); assert.equal(saved.recurrenceInterval, 2)
+  assert.equal(saved.isDeadline, 1); assert.equal(saved.endTime, saved.eventTime)
+  assert.equal((await integration.sync()).exported, 0)
+  assert.equal((await integration.sync()).imported, 0)
+  remotes.set(mapping.remoteId, { ...remote(mapping.remoteId), etag: 'moved' })
+  assert.equal((await integration.sync()).skippedReasons.unsafeDeadlineRootScheduleChange, 1)
+  assert.equal((await db.event.findUnique({ where: { id: root.id } })).eventDate, root.eventDate)
+  assert.equal(await db.event.count(), 2)
+  remotes.set(mapping.remoteId, { id: mapping.remoteId, status: 'cancelled', etag: 'deleted' })
+  await integration.sync()
+  assert.equal(await db.event.count(), 0)
+  assert.equal(await db.googleEventMapping.count(), 2)
+  assert.equal((await integration.sync()).deleted, 1)
+  assert.equal((await integration.sync()).exported, 0)
 })
 test('uses calendar timezone and skips sub-minute precision', () => {
   assert.equal(remoteEvent(remote('r'), 'America/New_York').eventTime, '05:00')

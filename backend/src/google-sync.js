@@ -27,7 +27,7 @@ export function tokenCipher(base64) {
   }
 }
 
-export function remoteEvent(remote, zone) {
+export function remoteEvent(remote, zone, local) {
   if (remote.eventType && remote.eventType !== 'default' || remote.recurrence || !remote.etag) return null
   const allDay = Boolean(remote.start?.date && remote.end?.date)
   const parts = (value) => {
@@ -40,11 +40,17 @@ export function remoteEvent(remote, zone) {
   const start = allDay ? { date: remote.start.date, time: '00:00' } : parts(remote.start)
   const end = allDay ? { date: remote.end.date, time: '00:00' } : parts(remote.end)
   if (!start || !end || `${end.date}T${end.time}` <= `${start.date}T${start.time}`) return null
-  return { title: remote.summary || '(Untitled)', description: remote.description || '', eventDate: start.date, eventTime: start.time, endDate: end.date, endTime: end.time, allDay, timeZone: zone }
+  const isDeadline = local?.isDeadline || remote.extendedProperties?.private?.lazyOrganizerDeadline === '1' ? 1 : 0
+  return { title: remote.summary || '(Untitled)', description: remote.description || '', eventDate: start.date, eventTime: start.time, endDate: isDeadline ? null : end.date, endTime: isDeadline ? start.time : end.time, allDay: isDeadline ? false : allDay, timeZone: zone, isDeadline }
 }
 
 export function localEvent(event, zone) {
-  if (event.isDeadline || event.recurrence !== 'none') return null
+  if (event.recurrence !== 'none' && !event.isDeadline) return null
+  if (event.isDeadline) {
+    const end = new Date(`${event.eventDate}T${event.eventTime}:00Z`)
+    end.setUTCMinutes(end.getUTCMinutes() + 1)
+    return { summary: event.title, description: event.description, start: { dateTime: `${event.eventDate}T${event.eventTime}:00`, timeZone: event.timeZone || zone }, end: { dateTime: end.toISOString().slice(0, 19), timeZone: event.timeZone || zone }, extendedProperties: { private: { lazyOrganizerDeadline: '1' } } }
+  }
   const endDate = event.endDate || event.eventDate
   if (event.allDay) {
     if (endDate <= event.eventDate) return null
@@ -55,10 +61,10 @@ export function localEvent(event, zone) {
 }
 
 function matchesAttempt(remote, attempted, zone) {
-  const actual = remoteEvent(remote, attempted.timeZone || zone)
+  const actual = remoteEvent(remote, attempted.timeZone || zone, attempted)
   if (!actual) return false
   const keys = ['title', 'description', 'eventDate', 'allDay', ...(attempted.allDay ? [] : ['eventTime', 'endTime'])]
-  return keys.every((key) => actual[key] === attempted[key]) && actual.endDate === (attempted.endDate || attempted.eventDate)
+  return keys.every((key) => actual[key] === attempted[key]) && actual.isDeadline === attempted.isDeadline && actual.endDate === (attempted.isDeadline ? null : attempted.endDate || attempted.eventDate)
 }
 
 export function createGoogleIntegration(db, { env = process.env, fetchImpl = fetch, now = Date.now } = {}) {
@@ -119,7 +125,7 @@ export function createGoogleIntegration(db, { env = process.env, fetchImpl = fet
       const base = `calendars/${encodeURIComponent(calendar.id)}/events`
       const start = new Date(now() - 30 * DAY).toISOString()
       const end = new Date(now() + 366 * DAY).toISOString()
-      const result = { imported: 0, exported: 0, deleted: 0, conflicts: 0, skipped: 0, skippedReasons: {}, window: { start, end }, timeZone: calendar.timeZone, limitations: ['New imports and exports are bounded to 30 days past and 366 days future; existing mappings are checked outside this window.', 'Google recurrence instances and existing local occurrence rows sync individually; recurrence rules and local recurrence roots are not synced or generated.', 'Deadlines, non-default Google event types, sub-minute times, and unsafe recurrence-root changes are skipped. Card due dates are not synced.', 'Only title, description, dates, times and timezone sync. Google attendees, reminders, location and other metadata are preserved by PATCH, not imported.'] }
+      const result = { imported: 0, exported: 0, deleted: 0, conflicts: 0, skipped: 0, skippedReasons: {}, window: { start, end }, timeZone: calendar.timeZone, limitations: ['New imports and exports are bounded to 30 days past and 366 days future; existing mappings are checked outside this window.', 'Google recurrence instances, existing local occurrences and recurring deadline roots sync individually. Recurrence rules are not synced or generated; ordinary local recurrence roots are skipped. Google schedule changes to recurring deadline roots are skipped; move these in Organizer. Deleting a root also deletes its local occurrences, with mapped Google deletions following on subsequent syncs.', 'Deadlines sync as one-minute timed events. Moving or deleting a deadline updates or clears linked task due dates only when they match its previous date. Task titles are not changed. Non-default Google event types, sub-minute times, and unsafe recurrence-root changes are skipped.', 'Only title, description, dates, times, timezone and deadline identity sync. Google attendees, reminders, location and other metadata are preserved by PATCH, not imported.'] }
       const skip = (reason) => { result.skipped++; result.skippedReasons[reason] = (result.skippedReasons[reason] || 0) + 1 }
       const remotes = new Map()
       let pageToken
@@ -151,14 +157,22 @@ export function createGoogleIntegration(db, { env = process.env, fetchImpl = fet
         }
       }
       async function applyRemote(mapping, local, remote) {
-        const data = remote.status === 'cancelled' ? null : remoteEvent(remote, calendar.timeZone)
+        const previous = local || JSON.parse(mapping.localSnapshot || mapping.pending || 'null')
+        const data = remote.status === 'cancelled' ? null : remoteEvent(remote, local?.isDeadline && local.recurrence !== 'none' ? local.timeZone || calendar.timeZone : calendar.timeZone, previous)
         if (remote.status !== 'cancelled' && !data) { skip('unsupportedRemoteEvent'); return }
-        if (local && (local.isDeadline || local.recurrence !== 'none')) { skip('unsafeLocalRootOrDeadline'); return }
+        if (local && local.recurrence !== 'none') {
+          if (!local.isDeadline) { skip('unsafeLocalRoot'); return }
+          if (data && (data.eventDate !== local.eventDate || data.eventTime !== local.eventTime)) { skip('unsafeDeadlineRootScheduleChange'); return }
+        }
         await renew()
         await db.$transaction(async (tx) => {
           const current = mapping.eventId ? await tx.event.findUnique({ where: { id: mapping.eventId } }) : null
           if (snapshot(current) !== snapshot(local)) { result.conflicts++; skip('concurrentLocalEdit'); return }
           if (snapshot(local) !== mapping.localSnapshot) result.conflicts++
+          // Links also represent mentions; only a matching due date is a task deadline association.
+          if (current?.isDeadline && (!data || data.eventDate !== current.eventDate)) {
+            await tx.card.updateMany({ where: { dueDate: current.eventDate, eventLinks: { some: { eventId: current.id } } }, data: { dueDate: data?.eventDate ?? null } })
+          }
           if (!data) {
             if (current) { await tx.event.delete({ where: { id: current.id } }); result.deleted++ }
             await tx.googleEventMapping.update({ where: { id: mapping.id }, data: { tombstone: true, pending: null, remoteEtag: remote.etag || null, localSnapshot: snapshot(current) || mapping.localSnapshot || mapping.pending } })
