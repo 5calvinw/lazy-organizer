@@ -168,27 +168,95 @@ function RecordDescription({ value, label, options, checklist, onSave, onAddChec
   return <div className="description-autocomplete"><div ref={editorRef} className="description-editor" contentEditable suppressContentEditableWarning data-placeholder="Add details… Type $ to link records or !checklist to add a checklist." onInput={update} onKeyDown={(event) => { if (!matches.length || query === null) return; if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive((current) => (current + (event.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length) } if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); choose(matches[active]) } if (event.key === 'Escape') { event.preventDefault(); setQuery(null) } }} onBlur={(event) => onSave(serializeDescription(event.currentTarget))} onClick={(event) => { const chip = (event.target as HTMLElement).closest<HTMLElement>('.record-chip'); const id = Number(chip?.dataset.recordId); if (chip?.dataset.recordType === 'notebook') openNotebook(id); if (chip?.dataset.recordType === 'event') openEvent?.(id) }} role="textbox" aria-multiline="true" aria-label={label} />{query !== null && matches.length > 0 && <div className="record-suggestions" role="listbox" aria-label="Linked record suggestions">{matches.map((record, index) => <button className={index === active ? 'active' : ''} type="button" role="option" aria-selected={index === active} key={`${record.type}-${record.id}`} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(record)}><span>{record.type === 'event' ? '◷' : '▮'}</span><strong>{record.title}</strong><small>{record.detail}</small></button>)}</div>}{hasChecklist && checklist && <div className="inline-checklist">{checklist.map((item) => <div className="inline-checklist-item" key={item.id}><input type="checkbox" checked={Boolean(item.completed)} onChange={(event) => onChangeChecklist?.(item.id, { completed: event.target.checked })} /><input className={item.completed ? 'completed' : ''} defaultValue={item.title} onBlur={(event) => { const title = event.target.value.trim(); if (title && title !== item.title) onChangeChecklist?.(item.id, { title }) }} aria-label="Checklist item" /><button type="button" onClick={() => onDeleteChecklist?.(item.id)} aria-label="Remove checklist item">×</button></div>)}<form onSubmit={onAddChecklist}><span>＋</span><input name="title" placeholder="Add an item" aria-label="New checklist item" /></form></div>}</div>
 }
 
-function TodayApp({ active, openCard, openEvent }: { active: boolean; openCard: (id: number) => void; openEvent: (id: number) => void }) {
+function TodayApp({ active, openCard, openEvent, openCalendar }: { active: boolean; openCard: (id: number) => void; openEvent: (id: number) => void; openCalendar: () => void }) {
   const [data, setData] = useState<TodayData | null>(null)
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [captureDate, setCaptureDate] = useState('none')
+  const [panel, setPanel] = useState('tasks')
+  const [notice, setNotice] = useState('')
+  const [undo, setUndo] = useState<{ id: number; listId: number; index: number } | null>(null)
   async function load() {
     try { setData(await request<TodayData>('/api/today')); setError('') }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load today') }
   }
-  useEffect(() => { if (active) void load() }, [active])
+  useEffect(() => {
+    if (!active) return
+    void load()
+    const refresh = () => void load()
+    const openError = (event: Event) => setError((event as CustomEvent<string>).detail)
+    window.addEventListener('task-open-error', openError)
+    window.addEventListener('organizer-changed', refresh)
+    window.addEventListener('focus', refresh)
+    const timer = window.setInterval(refresh, 60_000)
+    return () => { window.removeEventListener('task-open-error', openError); window.removeEventListener('organizer-changed', refresh); window.removeEventListener('focus', refresh); window.clearInterval(timer) }
+  }, [active])
   async function capture(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (busy) return
     const form = event.currentTarget
-    const title = String(new FormData(form).get('title') ?? '').trim()
+    const fields = new FormData(form)
+    const title = String(fields.get('title') ?? '').trim()
     if (!title) return
-    try { await request('/api/today/tasks', { method: 'POST', ...json({ title }) }); form.reset(); await load() }
+    const dueDate = captureDate === 'today' ? data?.date ?? isoDate(new Date()) : captureDate === 'custom' ? String(fields.get('dueDate')) : null
+    setBusy(true)
+    try { const card = await request<Card>('/api/today/tasks', { method: 'POST', ...json({ title, dueDate }) }); form.reset(); setCaptureDate('none'); setNotice(dueDate ? 'Task added.' : `Task added to ${card.list_title}, without a due date.`); setUndo(null); await load(); window.dispatchEvent(new Event('organizer-changed')) }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not add task') }
+    finally { setBusy(false) }
   }
-  const TaskGroup = ({ title, cards, tone, area }: { title: string; cards: Card[]; tone?: string; area: string }) => <section className={`today-group ${area}${tone ? ` ${tone}` : ''}`}><header><div><h2>{title}</h2></div><span className="today-count">{cards.length}</span></header>{cards.length ? <div className="today-items">{cards.map((card) => <button type="button" key={card.id} onClick={() => openCard(card.id)}><span className={`status-dot color-${card.color}`} /><span><strong>{card.title}</strong><small>{card.list_title}{card.due_date ? ` · ${readableDate(card.due_date)}` : ''}</small></span><CardMeta card={card} /></button>)}</div> : <p className="empty-copy">Nothing here.</p>}</section>
-  return <main className="workspace today-workspace"><header className="today-header"><div className="today-date-lockup"><div><h1>{data ? readableDate(data.date) : 'Today'}</h1><span>{data ? new Date(`${data.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long' }) : 'Loading date'}</span></div></div><form className="quick-capture" onSubmit={(event) => void capture(event)}><div><input id="quick-capture" name="title" aria-label="Capture a task" placeholder="What needs your attention?" required /><button type="submit">Add task</button></div></form></header><div className="today-body">{error && <p className="error" role="alert">{error}</p>}{!data ? <p className="loading-copy" role="status">Gathering today…</p> : <div className="today-grid"><TaskGroup title="Overdue" cards={data.overdue} tone="urgent" area="overdue" /><TaskGroup title="Due today" cards={data.dueToday} area="due" /><section className="today-group agenda"><header><div><h2>Schedule</h2></div><span className="today-count">{data.events.length}</span></header>{data.events.length ? <div className="today-items">{data.events.map((item) => <button type="button" key={item.id} onClick={() => openEvent(item.id)}><time dateTime={`${item.event_date}T${item.event_time}`}>{readableTime(item.event_time)}</time><span><strong>{item.title}</strong><small>{item.is_deadline ? 'Deadline' : `${readableTime(item.event_time)}–${readableTime(item.end_time)}`}</small></span></button>)}</div> : <p className="empty-copy">Your day is open.</p>}</section><TaskGroup title="In progress" cards={data.doing} area="progress" /></div>}</div></main>
+  async function changeTask(card: Card, dueDate?: string | null) {
+    if (busy) return
+    setBusy(true)
+    try {
+      if (dueDate !== undefined) {
+        await request(`/api/cards/${card.id}`, { method: 'PATCH', ...json({ dueDate }) })
+        setUndo(null); setNotice(dueDate ? 'Task rescheduled.' : 'Due date removed.')
+      } else {
+        const board = await request<List[]>('/api/board')
+        const done = board.find((list) => list.title.toLowerCase() === 'done')
+        if (!done) throw new Error('Create a list named Done in Tasks before completing tasks.')
+        const index = board.find((list) => list.id === card.list_id)?.cards.findIndex((item) => item.id === card.id) ?? 0
+        await request(`/api/cards/${card.id}/move`, { method: 'PATCH', ...json({ listId: done.id, index: done.cards.length }) })
+        setUndo(card.recurrence === 'none' ? { id: card.id, listId: card.list_id, index: Math.max(0, index) } : null)
+        setNotice(card.recurrence === 'none' ? `Completed: ${card.title}` : `Completed: ${card.title}. The next occurrence is managed in Tasks.`)
+      }
+      await load(); window.dispatchEvent(new Event('organizer-changed'))
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not update task') }
+    finally { setBusy(false) }
+  }
+  async function undoCompletion() {
+    if (!undo || busy) return
+    setBusy(true)
+    try { await request(`/api/cards/${undo.id}/move`, { method: 'PATCH', ...json({ listId: undo.listId, index: undo.index }) }); setUndo(null); setNotice('Task restored.'); await load(); window.dispatchEvent(new Event('organizer-changed')) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not restore task') }
+    finally { setBusy(false) }
+  }
+  function taskRows(cards: Card[]) {
+    const tomorrow = new Date(`${data?.date ?? isoDate(new Date())}T12:00:00`)
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    return <div className="today-task-list">{cards.map((card) => <div className="today-task-row" key={card.id}>
+      <input type="checkbox" checked={false} disabled={busy} aria-label={`Complete ${card.title}`} onChange={() => void changeTask(card)} />
+      <button type="button" className="today-task-title" onClick={() => openCard(card.id)}><strong>{card.title}</strong><small>{[card.list_title, card.due_date && card.due_date !== data?.date ? `Due ${readableDate(card.due_date)}` : '', card.priority !== 'none' ? `${card.priority} priority` : '', card.checklist_count ? `${card.checklist_completed}/${card.checklist_count} steps` : ''].filter(Boolean).join(' / ')}</small></button>
+      <details className="today-task-actions"><summary aria-label={`Reschedule ${card.title}`}>Reschedule</summary><div><button disabled={busy} onClick={() => void changeTask(card, isoDate(tomorrow))}>Tomorrow</button><button disabled={busy} onClick={() => void changeTask(card, null)}>Remove due date</button><label>Choose date<input type="date" disabled={busy} value={card.due_date ?? ''} onChange={(event) => { if (event.target.value) void changeTask(card, event.target.value) }} /></label></div></details>
+    </div>)}</div>
+  }
+  return <main className="workspace today-workspace">
+    <header className="today-header"><div className="today-heading"><time dateTime={data?.date}>{data ? new Date(`${data.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : 'Your daily workspace'}</time><h1>Today</h1><p>{data ? `${data.dueToday.length} tasks due today / ${data.events.length} scheduled` : 'A little clarity for the day ahead.'}</p></div>
+      <form className="quick-capture" onSubmit={(event) => void capture(event)}><label htmlFor="quick-capture">Capture a task</label><div className="capture-fields"><input id="quick-capture" name="title" placeholder="What needs your attention?" required disabled={busy} /><select aria-label="Task due date" value={captureDate} onChange={(event) => setCaptureDate(event.target.value)} disabled={busy}><option value="none">No date</option><option value="today">Today</option><option value="custom">Choose date</option></select>{captureDate === 'custom' && <input type="date" name="dueDate" aria-label="Choose task due date" required disabled={busy} />}<button type="submit" disabled={busy}>Add task</button></div></form>
+    </header>
+    <div className="today-body">{error && <div className="error" role="alert">{error} <button type="button" onClick={() => void load()}>Retry</button></div>}{notice && <div className="today-notice" role="status"><span>{notice}</span>{undo && <button disabled={busy} onClick={() => void undoCompletion()}>Undo</button>}<button aria-label="Dismiss notification" onClick={() => { setNotice(''); setUndo(null) }}>Dismiss</button></div>}
+      {!data ? !error && <p className="today-loading" role="status">Gathering today...</p> : <><div className="today-mobile-tabs" aria-label="Today panels"><button aria-pressed={panel === 'tasks'} onClick={() => setPanel('tasks')}>Tasks</button><button aria-pressed={panel === 'schedule'} onClick={() => setPanel('schedule')}>Schedule ({data.events.length})</button></div><div className="today-layout" data-panel={panel}>
+        <div className="today-task-scroll"><section className="today-task-group"><header><h2>Your tasks</h2><span>{data.dueToday.length}</span></header>{data.dueToday.length ? taskRows(data.dueToday) : <p className="today-empty">Nothing due today. Add a task for today, or pick up where you left off.</p>}</section>
+          {data.overdue.length > 0 && <details className="today-task-group today-overdue" open><summary><strong>Overdue</strong><span>{data.overdue.length}</span></summary>{taskRows(data.overdue)}</details>}
+          {data.doing.length > 0 && <details className="today-task-group"><summary><strong>Continue working</strong><span>{data.doing.length}</span></summary>{taskRows(data.doing)}</details>}
+        </div>
+        <aside className="today-schedule"><header><h2>Schedule</h2><span>{data.events.length}</span></header>{data.events.length ? <div className="today-agenda-list">{data.events.map((item) => <button className="today-event" key={item.id} onClick={() => openEvent(item.id)}><time dateTime={`${item.event_date}T${item.event_time}`}>{readableTime(item.event_time)}</time><span><strong>{item.title}</strong><small>{item.is_deadline ? 'Deadline' : `Until ${readableTime(item.end_time)}`}</small></span></button>)}</div> : <p className="today-empty">No events today.<br />Room to focus on your own time.</p>}<button className="today-calendar-link" onClick={openCalendar}>Open calendar</button></aside>
+      </div></>}
+    </div>
+  </main>
 }
 
-function TasksApp({ active, initialCardId, openNotebook, openEvent }: { active: boolean; initialCardId: number | null; openNotebook: (id: number) => void; openEvent: (id: number) => void }) {
+function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent }: { active: boolean; initialCardId: number | null; onCardOpened: () => void; openNotebook: (id: number) => void; openEvent: (id: number) => void }) {
   const [lists, setLists] = useState<List[]>([])
   const [deadlines, setDeadlines] = useState<EventItem[]>([])
   const [selected, setSelected] = useState<CardDetail | null>(null)
@@ -214,14 +282,14 @@ function TasksApp({ active, initialCardId, openNotebook, openEvent }: { active: 
     if (!active) return
     void loadBoard()
   }, [active])
-  useEffect(() => { if (initialCardId) void openCard(initialCardId) }, [initialCardId])
+  useEffect(() => { if (initialCardId) { void openCard(initialCardId); onCardOpened() } }, [initialCardId, onCardOpened])
   useEffect(() => { if (addingDeadline) deadlineDialogRef.current?.showModal(); else deadlineDialogRef.current?.close() }, [addingDeadline])
   useEffect(() => { if (selected) dialogRef.current?.showModal(); else dialogRef.current?.close() }, [selected])
   async function openCard(id: number) {
     try {
       const [detail, options] = await Promise.all([request<CardDetail>(`/api/cards/${id}`), request<LinkOptions>('/api/link-options')])
       setSelected(detail); setLinkOptions(options); setDialogError(''); setCommentImage(null); setCommentAttachment(null)
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not open task') }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not open task'); window.dispatchEvent(new CustomEvent('task-open-error', { detail: cause instanceof Error ? cause.message : 'Could not open task' })) }
   }
   function closeCard() { setSelected(null); setDialogError(''); setCommentImage(null); setCommentAttachment(null) }
   async function reloadSelected() { if (selected) setSelected(await request<CardDetail>(`/api/cards/${selected.id}`)) }
@@ -456,6 +524,7 @@ function App() {
   const [openCardId, setOpenCardId] = useState<number | null>(null)
   const [openEventId, setOpenEventId] = useState<number | null>(null)
   const [openNotebookId, setOpenNotebookId] = useState<number | null>(null)
+  const clearCardRequest = useCallback(() => setOpenCardId(null), [])
   const sectionRefs = {
     today: useRef<HTMLElement>(null),
     tasks: useRef<HTMLElement>(null),
@@ -485,7 +554,7 @@ function App() {
     })
   }
 
-  return <div className="app-shell"><main className="view-stack" ref={viewStackRef} tabIndex={-1} aria-label="Organizer workspace"><section className="workspace-view" data-view="today" ref={sectionRefs.today} aria-label="Today"><TodayApp active={activeView === 'today'} openCard={(id) => navigate('tasks', id)} openEvent={(id) => navigate('calendar', id)} /></section><section className="workspace-view" data-view="tasks" ref={sectionRefs.tasks} aria-label="Tasks"><TasksApp active={activeView === 'tasks'} initialCardId={openCardId} openNotebook={(id) => navigate('notebooks', id)} openEvent={(id) => navigate('calendar', id)} /></section><section className="workspace-view" data-view="calendar" ref={sectionRefs.calendar} aria-label="Calendar"><CalendarApp active={activeView === 'calendar'} initialEventId={openEventId} openNotebook={(id) => navigate('notebooks', id)} /></section><section className="workspace-view" data-view="notebooks" ref={sectionRefs.notebooks} aria-label="Notebooks"><NotebooksApp active={activeView === 'notebooks'} initialNotebookId={openNotebookId} openCard={(id) => navigate('tasks', id)} openEvent={(id) => navigate('calendar', id)} /></section></main></div>
+  return <div className="app-shell"><main className="view-stack" ref={viewStackRef} tabIndex={-1} aria-label="Organizer workspace"><section className="workspace-view" data-view="today" ref={sectionRefs.today} aria-label="Today"><TodayApp active={activeView === 'today'} openCard={setOpenCardId} openEvent={(id) => navigate('calendar', id)} openCalendar={() => navigate('calendar')} /></section><section className="workspace-view" data-view="tasks" ref={sectionRefs.tasks} aria-label="Tasks"><TasksApp active={activeView === 'tasks'} initialCardId={openCardId} onCardOpened={clearCardRequest} openNotebook={(id) => navigate('notebooks', id)} openEvent={(id) => navigate('calendar', id)} /></section><section className="workspace-view" data-view="calendar" ref={sectionRefs.calendar} aria-label="Calendar"><CalendarApp active={activeView === 'calendar'} initialEventId={openEventId} openNotebook={(id) => navigate('notebooks', id)} /></section><section className="workspace-view" data-view="notebooks" ref={sectionRefs.notebooks} aria-label="Notebooks"><NotebooksApp active={activeView === 'notebooks'} initialNotebookId={openNotebookId} openCard={(id) => navigate('tasks', id)} openEvent={(id) => navigate('calendar', id)} /></section></main></div>
 }
 
 export default App

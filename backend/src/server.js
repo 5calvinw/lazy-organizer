@@ -243,10 +243,12 @@ app.get('/api/today', async (_request, response) => {
 app.post('/api/today/tasks', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   if (!title) return response.status(400).json({ error: 'title is required' })
+  const dueDate = request.body.dueDate === undefined ? new Date().toLocaleDateString('en-CA') : request.body.dueDate
+  if (dueDate !== null && (typeof dueDate !== 'string' || !validDate(dueDate))) return response.status(400).json({ error: 'valid due date is required' })
   const lists = await prisma.list.findMany({ orderBy: { position: 'asc' }, select: { id: true, title: true } })
   const list = lists.find(({ title }) => title.toLocaleLowerCase() === 'to do') ?? lists[0]
   if (!list) return response.status(409).json({ error: 'create a task list first' })
-  const card = await prisma.card.create({ data: { listId: list.id, title, position: await nextCardPosition(prisma, list.id), color: 'gray', dueDate: new Date().toLocaleDateString('en-CA') }, include: cardInclude })
+  const card = await prisma.card.create({ data: { listId: list.id, title, position: await nextCardPosition(prisma, list.id), color: 'gray', dueDate }, include: cardInclude })
   response.status(201).json(cardJson(card))
 })
 
