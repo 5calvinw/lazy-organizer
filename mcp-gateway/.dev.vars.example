@@ -1,0 +1,4 @@
+# Local placeholders only. Set real values with `wrangler secret put`, never Git.
+ORIGIN_API_KEY=
+ORIGIN_CF_CLIENT_ID=
+ORIGIN_CF_CLIENT_SECRET=

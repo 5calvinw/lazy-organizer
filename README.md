@@ -53,6 +53,9 @@ Backend integration tests use mocked Google responses and disposable SQLite data
 
 ## Connect Hermes
 
+For Grok Bot's header-free OAuth gateway (local implementation; deployment
+pending approval), see [the MCP OAuth runbook](mcp-gateway/README.md).
+
 Copy the same key into `~/.hermes/.env`:
 
 ```dotenv
