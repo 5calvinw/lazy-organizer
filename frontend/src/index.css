@@ -1,23 +1,50 @@
 @font-face {
-  font-family: "Anthropic Serif";
-  src: url("/fonts/AnthropicSerif-Text-Medium-Static.otf") format("opentype");
+  font-family: 'Organizer Display';
+  src: url('/fonts/AnthropicSerif-Display-Medium-Static.otf') format('opentype');
   font-weight: 500;
   font-style: normal;
   font-display: swap;
 }
-
-:root {
-  font-family: "Anthropic Serif", Georgia, serif;
+@font-face {
+  font-family: 'Organizer Text';
+  src: url('/fonts/AnthropicSerif-Text-Medium-Static.otf') format('opentype');
   font-weight: 500;
-  letter-spacing: 0.03em;
-  color: #24221d;
-  background: #f3ead7;
+  font-style: normal;
+  font-display: swap;
+}
+:root {
+  font-family: 'Trebuchet MS', 'Lucida Sans Unicode', sans-serif;
+  color: #303830;
+  background: #faf9f5;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   color-scheme: light;
+  --paper: #faf9f5;
+  --surface: #fffefa;
+  --ink: #303830;
+  --muted: #62695d;
+  --line: #e2e3da;
+  --accent: #405c45;
+  --accent-soft: #e8ede3;
+  --danger: #9b4a37;
+  --serif: 'Organizer Display', Georgia, serif;
 }
-
-* { box-sizing: border-box; font-weight: 500; }
+* { box-sizing: border-box; }
 html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
-button, input, textarea { font-family: inherit; letter-spacing: inherit; }
+body { font-size: 14px; line-height: 1.5; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
+button, summary, select { cursor: pointer; }
+button { line-height: 1.4; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input, textarea, select { max-width: 100%; }
+input::placeholder, textarea::placeholder { color: #777d71; opacity: 1; }
+a { color: var(--accent); }
+svg { width: 20px; height: 20px; flex: 0 0 auto; }
+h1, h2, h3, p { overflow-wrap: anywhere; }
+h1, h2, h3 { font-weight: 500; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+[hidden] { display: none !important; }
+::selection { background: #dce6d4; color: #243c2b; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
