@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
 import './App.css'
 
-type OrganizerColor = 'blue' | 'green' | 'yellow' | 'purple' | 'orange' | 'gray'
+export type OrganizerColor = 'blue' | 'green' | 'yellow' | 'purple' | 'orange' | 'gray'
 type Priority = 'none' | 'low' | 'medium' | 'high'
 type Recurrence = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly'
-type Card = {
+export type Card = {
   id: number
   list_id: number
   list_title: string
@@ -20,14 +20,14 @@ type Card = {
   attachment_count: number
   created_at: string
 }
-type List = { id: number; title: string; cards: Card[] }
+export type List = { id: number; title: string; cards: Card[] }
 type Comment = { id: number; body: string; image: string | null; file_name?: string | null; file_mime_type?: string | null; file_data?: string | null; file_size?: number | null; created_at: string }
 type CommentAttachment = { name: string; mimeType: string; data: string; size: number }
 type ChecklistItem = { id: number; title: string; completed: number; position: number; created_at: string }
 type Attachment = { id: number; name: string; mime_type: string; data: string; size: number; created_at: string }
 type LinkedEvent = { id: number; title: string; event_date: string; event_time: string; is_deadline: number }
 type LinkedNotebook = { id: number; title: string }
-type CardDetail = Card & {
+export type CardDetail = Card & {
   comments: Comment[]
   checklist: ChecklistItem[]
   attachments: Attachment[]
@@ -50,18 +50,22 @@ type EventItem = {
   recurrence_parent_id: number | null
   created_at: string
 }
-type EventDetail = EventItem & { comments: Comment[]; notebooks: LinkedNotebook[] }
-type Notebook = { id: number; title: string; content: string; images: string[]; created_at: string }
+export type EventDetail = EventItem & { comments: Comment[]; notebooks: LinkedNotebook[] }
+export type Notebook = { id: number; title: string; content: string; images: string[]; created_at: string }
 type LinkOptions = { notebooks: LinkedNotebook[]; events: EventItem[] }
 type TodayData = { date: string; overdue: Card[]; dueToday: Card[]; doing: Card[]; events: EventItem[] }
 type Backlinks = { cards: Array<{ id: number; title: string; list_title: string }>; events: LinkedEvent[] }
 type View = 'today' | 'tasks' | 'calendar' | 'notebooks'
 
+const isPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1'
+const previewRequest = isPreview ? import('./preview').then(({ createPreviewRequest }) => createPreviewRequest()) : null
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options)
+  // Preview has no network fallback, including for unsupported operations.
+  const response = previewRequest ? await (await previewRequest)(url, options) : await fetch(url, options)
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: 'Request failed' }))
-    throw new Error(body.error ?? 'Request failed')
+    const body: unknown = await response.json().catch(() => null)
+    throw new Error(body && typeof body === 'object' && 'error' in body && typeof body.error === 'string' ? body.error : `Could not reach your workspace (${response.status}). Please try again.`)
   }
   return response.json()
 }
@@ -71,6 +75,23 @@ const organizerColors: OrganizerColor[] = ['blue', 'green', 'yellow', 'purple', 
 const recurrenceLabels: Record<Recurrence, string> = { none: 'Does not repeat', daily: 'Daily', weekdays: 'Weekdays', weekly: 'Weekly', monthly: 'Monthly' }
 type RecordMention = { id: number; title: string; type: 'event' | 'notebook'; detail: string }
 const recordLinkPattern = /\$\[(?:(event|notebook):(\d+)|([^\]\r\n]+))\]/g
+
+function Loading({ label }: { label: string }) {
+  return <div className="loading-state" role="status"><span className="eyebrow">{label}</span><span /><span /><span /></div>
+}
+function Icon({ name }: { name: View | 'leaf' }) {
+  const paths = {
+    today: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></>,
+    tasks: <><rect x="4" y="3" width="16" height="18" rx="3" /><path d="m8 9 1 1 2-2m2 1h3m-8 6 1 1 2-2m2 1h3" /></>,
+    calendar: <><rect x="3" y="5" width="18" height="16" rx="3" /><path d="M7 3v4m10-4v4M3 11h18m-13 4h2m4 0h2" /></>,
+    notebooks: <><path d="M5 3h13a2 2 0 0 1 2 2v16H6a3 3 0 0 1-3-3V5a2 2 0 0 1 2-2Zm2 0v14m-4 1a2 2 0 0 1 2-1h15M11 8h5m-5 4h3" /></>,
+    leaf: <><path d="M5 19C1 9 9 3 21 3c0 12-6 20-16 16Zm0 0L16 8" /></>,
+  }
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
+}
+function notebookExcerpt(content: string) {
+  return new DOMParser().parseFromString(content.replace(/<\/(?:p|div|h[1-6]|li)>/gi, '$& '), 'text/html').body.textContent?.replace(/\s+/g, ' ').trim() || 'An open page for your next thought.'
+}
 
 function isoDate(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -168,7 +189,7 @@ function RecordDescription({ value, label, options, checklist, onSave, onAddChec
     editorRef.current?.focus()
   }
   const hasChecklist = checklistEnabled || /^!checklist$/m.test(value)
-  return <div className="description-autocomplete"><div ref={editorRef} className="description-editor" contentEditable suppressContentEditableWarning data-placeholder="Add details… Type $ to link records or !checklist to add a checklist." onInput={update} onKeyDown={(event) => { if (!matches.length || query === null) return; if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive((current) => (current + (event.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length) } if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); choose(matches[active]) } if (event.key === 'Escape') { event.preventDefault(); setQuery(null) } }} onBlur={(event) => onSave(serializeDescription(event.currentTarget))} onClick={(event) => { const chip = (event.target as HTMLElement).closest<HTMLElement>('.record-chip'); const id = Number(chip?.dataset.recordId); if (chip?.dataset.recordType === 'notebook') openNotebook(id); if (chip?.dataset.recordType === 'event') openEvent?.(id) }} role="textbox" aria-multiline="true" aria-label={label} />{query !== null && matches.length > 0 && <div className="record-suggestions" role="listbox" aria-label="Linked record suggestions">{matches.map((record, index) => <button className={index === active ? 'active' : ''} type="button" role="option" aria-selected={index === active} key={`${record.type}-${record.id}`} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(record)}><span>{record.type === 'event' ? '◷' : '▮'}</span><strong>{record.title}</strong><small>{record.detail}</small></button>)}</div>}{hasChecklist && checklist && <div className="inline-checklist">{checklist.map((item) => <div className="inline-checklist-item" key={item.id}><input type="checkbox" checked={Boolean(item.completed)} onChange={(event) => onChangeChecklist?.(item.id, { completed: event.target.checked })} /><input className={item.completed ? 'completed' : ''} defaultValue={item.title} onBlur={(event) => { const title = event.target.value.trim(); if (title && title !== item.title) onChangeChecklist?.(item.id, { title }) }} aria-label="Checklist item" /><button type="button" onClick={() => onDeleteChecklist?.(item.id)} aria-label="Remove checklist item">×</button></div>)}<form onSubmit={onAddChecklist}><span>＋</span><input name="title" placeholder="Add an item" aria-label="New checklist item" /></form></div>}</div>
+  return <div className="description-autocomplete"><div ref={editorRef} className="description-editor" contentEditable suppressContentEditableWarning data-placeholder="Add details… Type $ to link records or !checklist to add a checklist." onInput={update} onKeyDown={(event) => { if (!matches.length || query === null) return; if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive((current) => (current + (event.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length) } if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); choose(matches[active]) } if (event.key === 'Escape') { event.preventDefault(); setQuery(null) } }} onBlur={(event) => onSave(serializeDescription(event.currentTarget))} onClick={(event) => { const chip = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('.record-chip') : null; const id = Number(chip?.dataset.recordId); if (chip?.dataset.recordType === 'notebook') openNotebook(id); if (chip?.dataset.recordType === 'event') openEvent?.(id) }} role="textbox" aria-multiline="true" aria-label={label} />{query !== null && matches.length > 0 && <div className="record-suggestions" role="listbox" aria-label="Linked record suggestions">{matches.map((record, index) => <button className={index === active ? 'active' : ''} type="button" role="option" aria-selected={index === active} key={`${record.type}-${record.id}`} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(record)}><span>{record.type === 'event' ? '◷' : '▮'}</span><strong>{record.title}</strong><small>{record.detail}</small></button>)}</div>}{hasChecklist && checklist && <div className="inline-checklist">{checklist.map((item) => <div className="inline-checklist-item" key={item.id}><input type="checkbox" aria-label={`Complete ${item.title}`} checked={Boolean(item.completed)} onChange={(event) => onChangeChecklist?.(item.id, { completed: event.target.checked })} /><input className={item.completed ? 'completed' : ''} defaultValue={item.title} onBlur={(event) => { const title = event.target.value.trim(); if (title && title !== item.title) onChangeChecklist?.(item.id, { title }) }} aria-label="Checklist item" /><button type="button" onClick={() => onDeleteChecklist?.(item.id)} aria-label="Remove checklist item">×</button></div>)}<form onSubmit={onAddChecklist}><span>＋</span><input name="title" placeholder="Add an item" aria-label="New checklist item" /></form></div>}</div>
 }
 
 function TodayApp({ active, openCard, openEvent, openCalendar }: { active: boolean; openCard: (id: number) => void; openEvent: (id: number) => void; openCalendar: () => void }) {
@@ -244,16 +265,16 @@ function TodayApp({ active, openCard, openEvent, openCalendar }: { active: boole
     </div>)}</div>
   }
   return <main className="workspace today-workspace">
-    <header className="today-header"><div className="today-heading"><time dateTime={data?.date}>{data ? new Date(`${data.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : 'Your daily workspace'}</time><h1>Today</h1><p>{data ? `${data.dueToday.length} tasks due today / ${data.events.length} scheduled` : 'A little clarity for the day ahead.'}</p></div>
-      <form className="quick-capture" onSubmit={(event) => void capture(event)}><label htmlFor="quick-capture">Capture a task</label><div className="capture-fields"><input id="quick-capture" name="title" placeholder="What needs your attention?" required disabled={busy} /><select aria-label="Task due date" value={captureDate} onChange={(event) => setCaptureDate(event.target.value)} disabled={busy}><option value="none">No date</option><option value="today">Today</option><option value="custom">Choose date</option></select>{captureDate === 'custom' && <input type="date" name="dueDate" aria-label="Choose task due date" required disabled={busy} />}<button type="submit" disabled={busy}>Add task</button></div></form>
+    <header className="today-header"><div className="today-heading"><time dateTime={data?.date}>{data ? new Date(`${data.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : 'Your daily workspace'}</time><h1>A little clarity.<br /><em>A day of possibility.</em></h1><p>Your space to focus on what matters, one thing at a time.</p></div>
+      <form className="quick-capture" onSubmit={(event) => void capture(event)}><label htmlFor="quick-capture"><span aria-hidden="true">＋</span> A thought, a task, a fresh start</label><div className="capture-fields"><input id="quick-capture" name="title" placeholder="What needs your attention?" required disabled={busy} /><select aria-label="Task due date" value={captureDate} onChange={(event) => setCaptureDate(event.target.value)} disabled={busy}><option value="none">No date</option><option value="today">Today</option><option value="custom">Choose date</option></select>{captureDate === 'custom' && <input type="date" name="dueDate" aria-label="Choose task due date" required disabled={busy} />}<button type="submit" disabled={busy}>Add task</button></div></form>
     </header>
     <div className="today-body">{error && <div className="error" role="alert">{error} <button type="button" onClick={() => void load()}>Retry</button></div>}{notice && <div className="today-notice" role="status"><span>{notice}</span>{undo && <button disabled={busy} onClick={() => void undoCompletion()}>Undo</button>}<button aria-label="Dismiss notification" onClick={() => { setNotice(''); setUndo(null) }}>Dismiss</button></div>}
-      {!data ? !error && <p className="today-loading" role="status">Gathering today...</p> : <><div className="today-mobile-tabs" aria-label="Today panels"><button aria-pressed={panel === 'tasks'} onClick={() => setPanel('tasks')}>Tasks</button><button aria-pressed={panel === 'schedule'} onClick={() => setPanel('schedule')}>Schedule ({data.events.length})</button></div><div className="today-layout" data-panel={panel}>
-        <div className="today-task-scroll"><section className="today-task-group"><header><h2>Your tasks</h2><span>{data.dueToday.length}</span></header>{data.dueToday.length ? taskRows(data.dueToday) : <p className="today-empty">Nothing due today. Add a task for today, or pick up where you left off.</p>}</section>
+      {!data ? !error && <Loading label="Gathering your day" /> : <><div className="day-overview"><span><strong>{String(data.dueToday.length).padStart(2, '0')}</strong> due today</span><span><strong>{String(data.events.length).padStart(2, '0')}</strong> on the schedule</span><span><strong>{String(data.doing.length).padStart(2, '0')}</strong> in progress</span></div><div className="today-mobile-tabs" aria-label="Today panels"><button aria-pressed={panel === 'tasks'} onClick={() => setPanel('tasks')}>Tasks</button><button aria-pressed={panel === 'schedule'} onClick={() => setPanel('schedule')}>Schedule ({data.events.length})</button></div><div className="today-layout" data-panel={panel}>
+        <div className="today-task-scroll"><section className="today-task-group"><header><h2>For today</h2><span>{data.dueToday.length}</span></header>{data.dueToday.length ? taskRows(data.dueToday) : <p className="today-empty">Nothing due today. Add a task for today, or pick up where you left off.</p>}</section>
           {data.overdue.length > 0 && <details className="today-task-group today-overdue" open><summary><strong>Overdue</strong><span>{data.overdue.length}</span></summary>{taskRows(data.overdue)}</details>}
           {data.doing.length > 0 && <details className="today-task-group"><summary><strong>Continue working</strong><span>{data.doing.length}</span></summary>{taskRows(data.doing)}</details>}
         </div>
-        <aside className="today-schedule"><header><h2>Schedule</h2><span>{data.events.length}</span></header>{data.events.length ? <div className="today-agenda-list">{data.events.map((item) => <button className="today-event" key={item.id} onClick={() => openEvent(item.id)}><time dateTime={item.all_day ? item.event_date : `${item.event_date}T${item.event_time}`}>{item.all_day ? 'All day' : readableTime(item.event_time)}</time><span><strong>{item.title}</strong><small>{item.is_deadline ? 'Deadline' : item.all_day ? `Ends before ${readableDate(item.end_date ?? item.event_date)}` : `Until ${item.end_date && item.end_date !== item.event_date ? `${readableDate(item.end_date)} ` : ''}${readableTime(item.end_time)}`}{item.time_zone && !item.all_day ? ` (${item.time_zone})` : ''}</small></span></button>)}</div> : <p className="today-empty">No events today.<br />Room to focus on your own time.</p>}<button className="today-calendar-link" onClick={openCalendar}>Open calendar</button></aside>
+        <aside className="today-schedule"><header><h2>Schedule</h2><span>{data.events.length}</span></header>{data.events.length ? <div className="today-agenda-list">{data.events.map((item) => <button className="today-event" key={item.id} onClick={() => openEvent(item.id)}><time dateTime={item.all_day ? item.event_date : `${item.event_date}T${item.event_time}`}>{item.all_day ? 'All day' : readableTime(item.event_time)}</time><span><strong>{item.title}</strong><small>{item.is_deadline ? 'Deadline' : item.all_day ? `Ends before ${readableDate(item.end_date ?? item.event_date)}` : `Until ${item.end_date && item.end_date !== item.event_date ? `${readableDate(item.end_date)} ` : ''}${readableTime(item.end_time)}`}{item.time_zone && !item.all_day ? ` (${item.time_zone})` : ''}</small></span></button>)}</div> : <p className="today-empty">No events today.<br />Room to focus on your own time.</p>}<button className="today-calendar-link" onClick={openCalendar}>View calendar <span aria-hidden="true">↗</span></button></aside>
       </div></>}
     </div>
   </main>
@@ -261,6 +282,7 @@ function TodayApp({ active, openCard, openEvent, openCalendar }: { active: boole
 
 function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent }: { active: boolean; initialCardId: number | null; onCardOpened: () => void; openNotebook: (id: number) => void; openEvent: (id: number) => void }) {
   const [lists, setLists] = useState<List[]>([])
+  const [loading, setLoading] = useState(true)
   const [deadlines, setDeadlines] = useState<EventItem[]>([])
   const [selected, setSelected] = useState<CardDetail | null>(null)
   const [linkOptions, setLinkOptions] = useState<LinkOptions | null>(null)
@@ -280,14 +302,15 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
       const [board, upcoming] = await Promise.all([request<List[]>('/api/board'), request<EventItem[]>('/api/deadlines')])
       setLists(board); setDeadlines(upcoming); setError('')
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load tasks') }
+    finally { setLoading(false) }
   }
   useEffect(() => {
     if (!active) return
     void loadBoard()
   }, [active])
   useEffect(() => { if (initialCardId) { void openCard(initialCardId); onCardOpened() } }, [initialCardId, onCardOpened])
-  useEffect(() => { if (addingDeadline) deadlineDialogRef.current?.showModal(); else deadlineDialogRef.current?.close() }, [addingDeadline])
-  useEffect(() => { if (selected) dialogRef.current?.showModal(); else dialogRef.current?.close() }, [selected])
+  useEffect(() => { if (addingDeadline && active) deadlineDialogRef.current?.showModal(); else { deadlineDialogRef.current?.close(); if (!active) setAddingDeadline(false) } }, [addingDeadline, active])
+  useEffect(() => { if (selected && active) dialogRef.current?.showModal(); else { dialogRef.current?.close(); if (!active) setSelected(null) } }, [selected, active])
   async function openCard(id: number) {
     try {
       const [detail, options] = await Promise.all([request<CardDetail>(`/api/cards/${id}`), request<LinkOptions>('/api/link-options')])
@@ -295,7 +318,7 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not open task'); window.dispatchEvent(new CustomEvent('task-open-error', { detail: cause instanceof Error ? cause.message : 'Could not open task' })) }
   }
   function closeCard() { setSelected(null); setDialogError(''); setCommentImage(null); setCommentAttachment(null) }
-  async function reloadSelected() { if (selected) setSelected(await request<CardDetail>(`/api/cards/${selected.id}`)) }
+  async function reloadSelected() { if (!selected) return; const detail = await request<CardDetail>(`/api/cards/${selected.id}`); if (dialogRef.current?.open) setSelected((current) => current?.id === detail.id ? detail : current) }
   async function saveCard(changes: Record<string, unknown>) {
     if (!selected) return
     try {
@@ -377,7 +400,7 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
     if (!image) return
     event.preventDefault()
     if (image.size > 5_000_000) { setDialogError('Image must be 5 MB or smaller'); return }
-    setCommentAttachment(null); setCommentImage(await fileToDataUrl(image))
+    try { setCommentAttachment(null); setCommentImage(await fileToDataUrl(image)) } catch { setDialogError('Could not read the pasted image') }
   }
   async function attachCommentFile(files: FileList | null) {
     const file = files?.[0]
@@ -393,10 +416,17 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
     const form = event.currentTarget
     const title = String(new FormData(form).get('title') ?? '').trim()
     if (!title) return
-    await request(`/api/cards/${selected.id}/checklist`, { method: 'POST', ...json({ title }) }); form.reset(); await reloadSelected(); await loadBoard()
+    try { await request(`/api/cards/${selected.id}/checklist`, { method: 'POST', ...json({ title }) }); form.reset(); await reloadSelected(); await loadBoard() }
+    catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not add checklist item') }
   }
-  async function changeChecklist(id: number, changes: Record<string, unknown>) { await request(`/api/checklist/${id}`, { method: 'PATCH', ...json(changes) }); await reloadSelected(); await loadBoard() }
-  async function deleteChecklist(id: number) { await request(`/api/checklist/${id}`, { method: 'DELETE' }); await reloadSelected(); await loadBoard() }
+  async function changeChecklist(id: number, changes: Record<string, unknown>) {
+    try { await request(`/api/checklist/${id}`, { method: 'PATCH', ...json(changes) }); await reloadSelected(); await loadBoard() }
+    catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not update checklist item') }
+  }
+  async function deleteChecklist(id: number) {
+    try { await request(`/api/checklist/${id}`, { method: 'DELETE' }); await reloadSelected(); await loadBoard() }
+    catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not remove checklist item') }
+  }
   async function addAttachments(files: FileList | null) {
     if (!selected || !files) return
     try {
@@ -407,8 +437,11 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
       await reloadSelected(); await loadBoard()
     } catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not attach file') }
   }
-  async function deleteAttachment(id: number) { await request(`/api/attachments/${id}`, { method: 'DELETE' }); await reloadSelected(); await loadBoard() }
-  return <main className="workspace tasks-workspace">{error && <p className="error" role="alert">{error}</p>}<section className="board" aria-label="Task board">{lists.map((list) => <article className={`list${dragging !== null ? ' is-dragging' : ''}`} key={list.id} onDragOver={(event) => { event.preventDefault(); if (dragging !== null) moveLocally(dragging, list.id, list.cards.length) }} onDrop={(event) => void dropCard(event, list.id, list.cards.length)}><header className="list-header"><h2>{list.title}</h2><span>{list.cards.length}</span></header><div className="card-stack">{list.cards.map((card, index) => <button className={`task-card color-${card.color}${dragging === card.id ? ' dragging' : ''}`} key={card.id} type="button" draggable onDragStart={(event) => { dragOrigin.current = lists; setDragging(card.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(card.id)) }} onDragEnd={() => { setTrashActive(false); setDragging(null); dragOrigin.current = null }} onDragOver={(event) => { event.stopPropagation(); event.preventDefault(); if (dragging !== null) moveLocally(dragging, list.id, index) }} onDrop={(event) => { event.stopPropagation(); void dropCard(event, list.id, index) }} onClick={() => { if (dragging === null) void openCard(card.id) }}><strong>{card.title}</strong><CardMeta card={card} /></button>)}</div>{addingTo === list.id ? <form className="add-form" onSubmit={(event) => void addCard(event, list.id)}><textarea name="title" autoFocus placeholder="Enter a task title…" aria-label="Task title" /><div><button className="primary" type="submit">Add task</button><button type="button" onClick={() => setAddingTo(null)} aria-label="Cancel">×</button></div></form> : <button className="add-card" type="button" onClick={() => setAddingTo(list.id)}><span>＋</span> Add a task</button>}</article>)}<aside className="deadlines" aria-labelledby="deadlines-title"><header><h2 id="deadlines-title">Deadlines</h2><button className="deadline-add" type="button" onClick={() => setAddingDeadline(true)} aria-label="Add deadline">＋</button></header>{deadlines.length ? <ol>{deadlines.map((deadline) => <li key={deadline.id}><button type="button" onClick={() => openEvent(deadline.id)}><time dateTime={`${deadline.event_date}T${deadline.event_time}`}><strong>{readableDate(deadline.event_date)}</strong><span>{readableTime(deadline.event_time)}</span></time><span>{deadline.title}</span></button></li>)}</ol> : <p className="deadlines-empty">No upcoming deadlines.</p>}</aside></section><aside className={`task-trash${dragging !== null ? ' visible' : ''}${trashActive ? ' active' : ''}`} aria-label="Delete task drop zone" onDragEnter={(event) => { event.preventDefault(); if (dragging !== null) setTrashActive(true) }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTrashActive(false) }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move' }} onDrop={(event) => void dropCardInTrash(event)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg><span>Drop to delete</span></aside><dialog ref={deadlineDialogRef} className="event-dialog" aria-labelledby="add-deadline-title" onCancel={() => setAddingDeadline(false)}><form className="event-popup" onSubmit={(event) => void addDeadline(event)}><header><div><h2 id="add-deadline-title">Add deadline</h2><p>This also appears in your calendar.</p></div><button type="button" aria-label="Cancel" onClick={() => setAddingDeadline(false)}>×</button></header><label>Title<input name="title" autoFocus required placeholder="What is due?" /></label><label>Date<input name="date" type="date" defaultValue={isoDate(new Date())} required /></label><label>Time<input name="time" type="time" defaultValue="09:00" required /></label><RecurrenceFields /><button className="event-submit" type="submit">Add deadline</button></form></dialog><dialog ref={dialogRef} className="card-dialog" aria-labelledby="task-dialog-title" onCancel={closeCard}>{selected && <div className="dialog-layout"><section className="card-details"><button className="close" type="button" onClick={closeCard} aria-label="Close task">×</button><div className="title-row"><span className={`circle color-${selected.color}`} /><div><input id="task-dialog-title" className="editable-title" defaultValue={selected.title} onBlur={(event) => { if (event.target.value.trim() && event.target.value.trim() !== selected.title) void saveCard({ title: event.target.value.trim() }) }} aria-label="Task title" /><p>in list <strong>{selected.list_title}</strong></p></div></div>{dialogError && <p className="dialog-error" role="alert">{dialogError}</p>}
+  async function deleteAttachment(id: number) {
+    try { await request(`/api/attachments/${id}`, { method: 'DELETE' }); await reloadSelected(); await loadBoard() }
+    catch (cause) { setDialogError(cause instanceof Error ? cause.message : 'Could not remove attachment') }
+  }
+  return <main className="workspace tasks-workspace"><header className="page-heading"><div><span className="eyebrow">A little progress, every day</span><h1>Tasks</h1><p>From a first thought to a satisfying done.</p></div><span className="view-caption">Board view <span aria-hidden="true">▤</span></span></header>{error && <p className="error" role="alert">{error} <button onClick={() => void loadBoard()}>Try again</button></p>}{loading && <Loading label="Opening your task board" />}<section className="board" aria-label="Task board">{!loading && !error && !lists.length && <div className="empty-state"><Icon name="tasks" /><h2>Your board is ready for a fresh start.</h2><p>No task lists are available. Your workspace needs its initial lists before you can add tasks.</p></div>}{lists.map((list) => <article className={`list${dragging !== null ? ' is-dragging' : ''}`} key={list.id} onDragOver={(event) => { event.preventDefault(); if (dragging !== null) moveLocally(dragging, list.id, list.cards.length) }} onDrop={(event) => void dropCard(event, list.id, list.cards.length)}><header className="list-header"><h2>{list.title}</h2><span>{list.cards.length}</span></header><div className="card-stack">{!list.cards.length && <p className="list-empty">{list.title.toLowerCase() === 'done' ? 'Good things take a little time.' : 'A little room for what comes next.'}</p>}{list.cards.map((card, index) => <button className={`task-card color-${card.color}${dragging === card.id ? ' dragging' : ''}`} key={card.id} type="button" draggable onDragStart={(event) => { dragOrigin.current = lists; setDragging(card.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(card.id)) }} onDragEnd={() => { setTrashActive(false); setDragging(null); dragOrigin.current = null }} onDragOver={(event) => { event.stopPropagation(); event.preventDefault(); if (dragging !== null) moveLocally(dragging, list.id, index) }} onDrop={(event) => { event.stopPropagation(); void dropCard(event, list.id, index) }} onClick={() => { if (dragging === null) void openCard(card.id) }}><strong>{card.title}</strong><CardMeta card={card} /></button>)}</div>{addingTo === list.id ? <form className="add-form" onSubmit={(event) => void addCard(event, list.id)}><textarea name="title" autoFocus placeholder="Enter a task title…" aria-label="Task title" /><div><button className="primary" type="submit">Add task</button><button type="button" onClick={() => setAddingTo(null)} aria-label="Cancel">×</button></div></form> : <button className="add-card" type="button" onClick={() => setAddingTo(list.id)}><span>＋</span> Add a task</button>}</article>)}<aside className="deadlines" aria-labelledby="deadlines-title"><header><h2 id="deadlines-title">Deadlines</h2><button className="deadline-add" type="button" onClick={() => setAddingDeadline(true)} aria-label="Add deadline">＋</button></header>{deadlines.length ? <ol>{deadlines.map((deadline) => <li key={deadline.id}><button type="button" onClick={() => openEvent(deadline.id)}><time dateTime={`${deadline.event_date}T${deadline.event_time}`}><strong>{readableDate(deadline.event_date)}</strong><span>{readableTime(deadline.event_time)}</span></time><span>{deadline.title}</span></button></li>)}</ol> : <p className="deadlines-empty">No upcoming deadlines.</p>}</aside></section><aside className={`task-trash${dragging !== null ? ' visible' : ''}${trashActive ? ' active' : ''}`} aria-label="Delete task drop zone" onDragEnter={(event) => { event.preventDefault(); if (dragging !== null) setTrashActive(true) }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTrashActive(false) }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move' }} onDrop={(event) => void dropCardInTrash(event)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg><span>Drop to delete</span></aside><dialog ref={deadlineDialogRef} className="event-dialog" aria-labelledby="add-deadline-title" onCancel={() => setAddingDeadline(false)} onClose={() => setAddingDeadline(false)}><form className="event-popup" onSubmit={(event) => void addDeadline(event)}><header><div><h2 id="add-deadline-title">Add deadline</h2><p>This also appears in your calendar.</p></div><button type="button" aria-label="Cancel" onClick={() => setAddingDeadline(false)}>×</button></header>{error && <p className="error" role="alert">{error}</p>}<label>Title<input name="title" autoFocus required placeholder="What is due?" /></label><label>Date<input name="date" type="date" defaultValue={isoDate(new Date())} required /></label><label>Time<input name="time" type="time" defaultValue="09:00" required /></label><RecurrenceFields /><button className="event-submit" type="submit">Add deadline</button></form></dialog><dialog ref={dialogRef} className="card-dialog" aria-labelledby="task-dialog-title" onCancel={closeCard} onClose={closeCard}>{selected && <div className="dialog-layout"><section className="card-details"><button className="close" type="button" onClick={closeCard} aria-label="Close task">×</button><div className="title-row"><span className={`circle color-${selected.color}`} /><div><input id="task-dialog-title" className="editable-title" defaultValue={selected.title} onBlur={(event) => { if (event.target.value.trim() && event.target.value.trim() !== selected.title) void saveCard({ title: event.target.value.trim() }) }} aria-label="Task title" /><p>in list <strong>{selected.list_title}</strong></p></div></div>{dialogError && <p className="dialog-error" role="alert">{dialogError}</p>}
 <details className="task-properties">
   <summary>
     <span className="property-values">
@@ -423,10 +456,11 @@ function TasksApp({ active, initialCardId, onCardOpened, openNotebook, openEvent
     <label>Priority<select name="priority" value={selected.priority} onChange={(event) => void saveCard({ priority: event.target.value })}><option value="none">No priority</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
     <label>Repeat<select name="recurrence" value={selected.recurrence} onChange={(event) => void saveCard({ recurrence: event.target.value })}>{(Object.keys(recurrenceLabels) as Recurrence[]).map((item) => <option value={item} key={item}>{recurrenceLabels[item]}</option>)}</select></label>
     <label>Every<input name="recurrenceInterval" type="number" min="1" max="365" value={selected.recurrence_interval} onChange={(event) => setSelected({ ...selected, recurrence_interval: Number(event.target.value) })} onBlur={(event) => void saveCard({ recurrenceInterval: Number(event.target.value) })} /></label>
+    <label>Move to list<select value={selected.list_id} onChange={(event) => { void moveCard(selected.id, Number(event.target.value), 0).then(reloadSelected).catch((cause: unknown) => setDialogError(cause instanceof Error ? cause.message : 'Could not move task')) }}>{lists.map((list) => <option key={list.id} value={list.id}>{list.title}</option>)}</select></label>
     <ColorPicker name="card-color" value={selected.color} onChange={(color) => void saveCard({ color })} />
   </div>
 </details>
-<section className="detail-section"><h3>Description</h3><RecordDescription key={selected.id} value={selected.description} label="Task description" options={linkOptions} checklist={selected.checklist} onSave={(description) => void saveCard({ description })} onAddChecklist={(event) => void addChecklist(event)} onChangeChecklist={(id, changes) => void changeChecklist(id, changes)} onDeleteChecklist={(id) => void deleteChecklist(id)} openNotebook={openNotebook} openEvent={openEvent} /></section><section className="detail-section"><header><h3>Attachments</h3><span>{selected.attachments.length}</span></header><div className="attachments">{selected.attachments.map((item) => <div key={item.id}><a href={item.data} download={item.name}>{item.mime_type.startsWith('image/') ? <img src={item.data} alt="" /> : <span className="file-mark">FILE</span>}<span><strong>{item.name}</strong><small>{Math.max(1, Math.round(item.size / 1024))} KB</small></span></a><button type="button" onClick={() => void deleteAttachment(item.id)} aria-label={`Remove ${item.name}`}>×</button></div>)}</div><label className="attachment-add">Attach files<input type="file" multiple onChange={(event) => { void addAttachments(event.target.files); event.target.value = '' }} /></label></section><button className="danger-action" type="button" onClick={() => void deleteCard()}>Delete task</button></section><aside className="activity"><header><h3>Comments and activity</h3></header><form className="comment-form" onSubmit={(event) => void addComment(event)}><div className="comment-composer"><textarea name="comment" rows={3} placeholder="Add a comment…" aria-label="Comment" onPaste={(event) => void pasteCommentImage(event)} /><div className="comment-toolbar"><div className="comment-tools" aria-label="Comment tools"><button type="button" className="comment-tool" aria-label="Bold" title="Bold" disabled><strong>B</strong></button><button type="button" className="comment-tool comment-tool-italic" aria-label="Italic" title="Italic" disabled><em>I</em></button><button type="button" className="comment-tool comment-tool-underline" aria-label="Underline" title="Underline" disabled><u>U</u></button><span className="comment-toolbar-divider" aria-hidden="true" /><label className="comment-attach" title="Attach image or file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg><input type="file" onChange={(event) => { void attachCommentFile(event.target.files); event.target.value = '' }} aria-label="Attach image or file" /></label></div><button className="comment-submit" type="submit">Post</button></div></div>{commentImage && <div className="comment-image-preview"><img src={commentImage} alt="Pasted attachment preview" /><button type="button" onClick={() => setCommentImage(null)} aria-label="Remove pasted image">×</button></div>}{commentAttachment && <div className="comment-file-preview">{commentAttachment.mimeType.startsWith('image/') ? <img src={commentAttachment.data} alt={commentAttachment.name + ' preview'} /> : <span className="file-mark">FILE</span>}<span className="comment-file-details"><strong>{commentAttachment.name}</strong><small>{Math.max(1, Math.round(commentAttachment.size / 1024))} KB</small></span><button type="button" onClick={() => setCommentAttachment(null)} aria-label="Remove attached file">×</button></div>}</form>{selected.comments.map((comment) => <div className="activity-item" key={comment.id}><span className="avatar">C</span><p><strong>You</strong>{comment.body && <> {comment.body}</>}{comment.image && <img src={comment.image} alt={comment.body || 'Comment attachment'} />}{comment.file_data && (comment.file_mime_type?.startsWith('image/') ? <img src={comment.file_data} alt={comment.file_name || 'Comment attachment'} /> : <a className="comment-file-link" href={comment.file_data} download={comment.file_name || 'attachment'}><span className="file-mark">FILE</span><span>{comment.file_name || 'Attachment'}</span></a>)}<small>{new Date(comment.created_at.replace(' ', 'T') + 'Z').toLocaleString()}</small></p></div>)}</aside></div>}</dialog></main>
+<section className="detail-section"><h3>Description</h3><RecordDescription key={selected.id} value={selected.description} label="Task description" options={linkOptions} checklist={selected.checklist} onSave={(description) => void saveCard({ description })} onAddChecklist={(event) => void addChecklist(event)} onChangeChecklist={(id, changes) => void changeChecklist(id, changes)} onDeleteChecklist={(id) => void deleteChecklist(id)} openNotebook={openNotebook} openEvent={openEvent} /></section><section className="detail-section"><header><h3>Attachments</h3><span>{selected.attachments.length}</span></header><div className="attachments">{selected.attachments.map((item) => <div key={item.id}><a href={item.data} download={item.name}>{item.mime_type.startsWith('image/') ? <img src={item.data} alt="" /> : <span className="file-mark">FILE</span>}<span><strong>{item.name}</strong><small>{Math.max(1, Math.round(item.size / 1024))} KB</small></span></a><button type="button" onClick={() => void deleteAttachment(item.id)} aria-label={`Remove ${item.name}`}>×</button></div>)}</div><label className="attachment-add">Attach files<input type="file" multiple onChange={(event) => { void addAttachments(event.target.files); event.target.value = '' }} /></label></section><button className="danger-action" type="button" onClick={() => void deleteCard()}>Delete task</button></section><aside className="activity"><header><h3>Notes & activity</h3></header><form className="comment-form" onSubmit={(event) => void addComment(event)}><div className="comment-composer"><textarea name="comment" rows={3} placeholder="Add a comment…" aria-label="Comment" onPaste={(event) => void pasteCommentImage(event)} /><div className="comment-toolbar"><div className="comment-tools" aria-label="Comment tools"><button type="button" className="comment-tool" aria-label="Bold" title="Bold" disabled><strong>B</strong></button><button type="button" className="comment-tool comment-tool-italic" aria-label="Italic" title="Italic" disabled><em>I</em></button><button type="button" className="comment-tool comment-tool-underline" aria-label="Underline" title="Underline" disabled><u>U</u></button><span className="comment-toolbar-divider" aria-hidden="true" /><label className="comment-attach" title="Attach image or file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg><input type="file" onChange={(event) => { void attachCommentFile(event.target.files); event.target.value = '' }} aria-label="Attach image or file" /></label></div><button className="comment-submit" type="submit">Post</button></div></div>{commentImage && <div className="comment-image-preview"><img src={commentImage} alt="Pasted attachment preview" /><button type="button" onClick={() => setCommentImage(null)} aria-label="Remove pasted image">×</button></div>}{commentAttachment && <div className="comment-file-preview">{commentAttachment.mimeType.startsWith('image/') ? <img src={commentAttachment.data} alt={commentAttachment.name + ' preview'} /> : <span className="file-mark">FILE</span>}<span className="comment-file-details"><strong>{commentAttachment.name}</strong><small>{Math.max(1, Math.round(commentAttachment.size / 1024))} KB</small></span><button type="button" onClick={() => setCommentAttachment(null)} aria-label="Remove attached file">×</button></div>}</form>{selected.comments.map((comment) => <div className="activity-item" key={comment.id}><span className="avatar" aria-hidden="true">Y</span><p><strong>You</strong>{comment.body && <> {comment.body}</>}{comment.image && <img src={comment.image} alt={comment.body || 'Comment attachment'} />}{comment.file_data && (comment.file_mime_type?.startsWith('image/') ? <img src={comment.file_data} alt={comment.file_name || 'Comment attachment'} /> : <a className="comment-file-link" href={comment.file_data} download={comment.file_name || 'attachment'}><span className="file-mark">FILE</span><span>{comment.file_name || 'Attachment'}</span></a>)}<small>{new Date(comment.created_at.replace(' ', 'T') + 'Z').toLocaleString()}</small></p></div>)}</aside></div>}</dialog></main>
 }
 
 type GoogleStatus = { configured: boolean; connected: boolean; lastSyncedAt: string | null }
@@ -555,10 +589,11 @@ function EventScheduleFields({ item }: { item: EventItem }) {
   </>
 }
 
-function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean; initialEventId: number | null; openNotebook: (id: number) => void }) {
+function CalendarApp({ active, initialEventId, onEventOpened, openNotebook }: { active: boolean; initialEventId: number | null; onEventOpened: () => void; openNotebook: (id: number) => void }) {
   const today = new Date()
   const [month, setMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
   const [events, setEvents] = useState<EventItem[]>([])
+  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<EventDetail | null>(null)
   const [notebooks, setNotebooks] = useState<LinkedNotebook[]>([])
   const [addingDate, setAddingDate] = useState<string | null>(null)
@@ -569,7 +604,7 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
   const dialogRef = useRef<HTMLDialogElement>(null)
   const addDialogRef = useRef<HTMLDialogElement>(null)
   const monthKey = isoDate(month).slice(0, 7)
-  const loadEvents = useCallback(async () => { try { setEvents(await request<EventItem[]>(`/api/events?month=${monthKey}`)); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load calendar') } }, [monthKey])
+  const loadEvents = useCallback(async () => { try { setEvents(await request<EventItem[]>(`/api/events?month=${monthKey}`)); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load calendar') } finally { setLoading(false) } }, [monthKey])
   useEffect(() => {
     if (!active) return
     void loadEvents()
@@ -579,12 +614,12 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
     window.addEventListener('organizer-changed', refresh)
     return () => window.removeEventListener('organizer-changed', refresh)
   }, [active, loadEvents])
-  useEffect(() => { if (initialEventId) void openEvent(initialEventId) }, [initialEventId])
-  useEffect(() => { if (addingDate) addDialogRef.current?.showModal(); else addDialogRef.current?.close() }, [addingDate])
-  useEffect(() => { if (selected) dialogRef.current?.showModal(); else dialogRef.current?.close() }, [selected])
+  useEffect(() => { if (initialEventId) { void openEvent(initialEventId); onEventOpened() } }, [initialEventId, onEventOpened])
+  useEffect(() => { if (addingDate && active) addDialogRef.current?.showModal(); else { addDialogRef.current?.close(); if (!active) setAddingDate(null) } }, [addingDate, active])
+  useEffect(() => { if (selected && active) dialogRef.current?.showModal(); else { dialogRef.current?.close(); if (!active) setSelected(null) } }, [selected, active])
   async function openEvent(id: number) { try { const [detail, options] = await Promise.all([request<EventDetail>(`/api/events/${id}`), request<LinkOptions>('/api/link-options')]); setSelected(detail); setNotebooks(options.notebooks); setDialogError(''); setCommentImage(null); setCommentAttachment(null) } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not open event') } }
   function closeEvent() { setSelected(null); setDialogError(''); setCommentImage(null); setCommentAttachment(null) }
-  async function reloadSelected() { if (selected) setSelected(await request<EventDetail>(`/api/events/${selected.id}`)) }
+  async function reloadSelected() { if (!selected) return; const detail = await request<EventDetail>(`/api/events/${selected.id}`); if (dialogRef.current?.open) setSelected((current) => current?.id === detail.id ? detail : current) }
   async function addEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!addingDate) return
     const data = new FormData(event.currentTarget)
@@ -618,7 +653,7 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
     if (!image) return
     event.preventDefault()
     if (image.size > 5_000_000) { setDialogError('Image must be 5 MB or smaller'); return }
-    setCommentAttachment(null); setCommentImage(await fileToDataUrl(image))
+    try { setCommentAttachment(null); setCommentImage(await fileToDataUrl(image)) } catch { setDialogError('Could not read the pasted image') }
   }
   async function attachCommentFile(files: FileList | null) {
     const file = files?.[0]
@@ -630,18 +665,21 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
   const firstCell = new Date(month.getFullYear(), month.getMonth(), 1 - ((month.getDay() + 6) % 7))
   const days = Array.from({ length: 42 }, (_, index) => new Date(firstCell.getFullYear(), firstCell.getMonth(), firstCell.getDate() + index))
   return <main className="workspace calendar-workspace">
-<GoogleCalendarControls active={active} />
+<header className="page-heading"><div><span className="eyebrow">Make room for your days</span><h1>Calendar</h1><p>A considered rhythm for work and everything else.</p></div><button className="primary-button" onClick={() => setAddingDate(isoDate(today))}>＋ Add event</button></header>
+{isPreview ? <div className="preview-integration">Local calendar · External connections are off in sample preview.</div> : <details className="integration-disclosure"><summary>Google Calendar connection</summary><GoogleCalendarControls active={active} /></details>}
 <nav className="calendar-nav" aria-label="Calendar controls">
 <button type="button" aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button>
-<h1>
+<h2>
 {month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
-</h1>
+</h2>
 <button type="button" onClick={() => setMonth(new Date(today.getFullYear(), today.getMonth(), 1))}>Today</button>
 <button type="button" aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button>
 </nav>
 {error && <p className="error" role="alert">
-{error}
+{error} <button onClick={() => void loadEvents()}>Try again</button>
 </p>}
+{loading && <Loading label="Opening your calendar" />}
+<p className="calendar-hint">Select a day to make a plan. Open an event to see the details.</p>
 <section className="calendar-shell" aria-label={`${month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })} calendar`}>
 <div className="weekday-row">
 {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>
@@ -653,8 +691,8 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
 <button className="day-number" type="button" onClick={() => setAddingDate(date)} aria-label={`Add event on ${day.toLocaleDateString()}`} aria-current={isToday ? 'date' : undefined}>
 {day.getDate()}
 </button>
-<div className="day-events">
-{dayEvents.map((item) => <button className={`calendar-event color-${item.is_deadline ? 'red' : item.color}${item.is_deadline ? ' deadline' : ''}`} type="button" draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData('text/plain', String(item.id))} onClick={() => void openEvent(item.id)}>
+<div className="day-events" data-event-count={dayEvents.length ? `${dayEvents.length} ${dayEvents.length === 1 ? 'plan' : 'plans'}` : ''}>
+{dayEvents.map((item) => <button aria-label={`${item.title}, ${readableDate(item.event_date)}, ${item.all_day ? 'all day' : readableTime(item.event_time)}`} className={`calendar-event color-${item.is_deadline ? 'red' : item.color}${item.is_deadline ? ' deadline' : ''}`} type="button" draggable key={item.id} onDragStart={(event) => event.dataTransfer.setData('text/plain', String(item.id))} onClick={() => void openEvent(item.id)}>
 <time dateTime={item.all_day ? date : `${date}T${date === item.event_date ? item.event_time : '00:00'}`}>
 {item.all_day ? 'All day' : date !== item.event_date ? 'Continues' : readableTime(item.event_time)}
 </time>
@@ -667,7 +705,11 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
 </article> })}
 </div>
 </section>
-<dialog ref={addDialogRef} className="event-dialog" aria-labelledby="add-event-title" onCancel={() => setAddingDate(null)}>
+<section className="calendar-mobile-agenda" aria-label="Events this month">
+<h2>This month's plans</h2>
+{events.length ? [...events].sort((a, b) => a.event_date.localeCompare(b.event_date) || a.event_time.localeCompare(b.event_time)).map((item) => <button key={item.id} type="button" onClick={() => void openEvent(item.id)}><time dateTime={item.event_date}>{new Date(`${item.event_date}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}<small>{item.all_day ? 'All day' : readableTime(item.event_time)}</small></time><span>{item.title}<small>{item.is_deadline ? 'Deadline' : 'Scheduled event'}</small></span><span aria-hidden="true">↗</span></button>) : <p className="today-empty">An open month. Select a date to add your first plan.</p>}
+</section>
+<dialog ref={addDialogRef} className="event-dialog" aria-labelledby="add-event-title" onCancel={() => setAddingDate(null)} onClose={() => setAddingDate(null)}>
 <form className="event-popup" onSubmit={(event) => void addEvent(event)}>
 <header>
 <div>
@@ -678,7 +720,7 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
 </div>
 <button type="button" aria-label="Cancel" onClick={() => setAddingDate(null)}>×</button>
 </header>
-<label>Event<input name="title" autoFocus required placeholder="What are you planning?" />
+{error && <p className="error" role="alert">{error}</p>}<label>Event<input name="title" autoFocus required placeholder="What are you planning?" />
 </label>
 <div className="event-times">
 <label>Start<input name="startTime" type="time" defaultValue="09:00" required />
@@ -691,7 +733,7 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
 <button className="event-submit" type="submit">Add event</button>
 </form>
 </dialog>
-<dialog ref={dialogRef} className="card-dialog" aria-labelledby="event-dialog-title" onCancel={closeEvent}>
+<dialog ref={dialogRef} className="card-dialog" aria-labelledby="event-dialog-title" onCancel={closeEvent} onClose={closeEvent}>
 {selected && <div className="dialog-layout">
 <section className="card-details">
 <button className="close" type="button" onClick={closeEvent} aria-label="Close event">×</button>
@@ -763,7 +805,7 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
 </div>}
 </form>
 {selected.comments.map((comment) => <div className="activity-item" key={comment.id}>
-<span className="avatar">C</span>
+<span className="avatar" aria-hidden="true">Y</span>
 <p>
 <strong>You</strong>
 {comment.body && <> {comment.body}
@@ -784,65 +826,88 @@ function CalendarApp({ active, initialEventId, openNotebook }: { active: boolean
 </main>
 }
 
-function NotebooksApp({ active, initialNotebookId, openCard, openEvent }: { active: boolean; initialNotebookId: number | null; openCard: (id: number) => void; openEvent: (id: number) => void }) {
+function NotebooksApp({ active, initialNotebookId, onNotebookOpened, openCard, openEvent }: { active: boolean; initialNotebookId: number | null; onNotebookOpened: () => void; openCard: (id: number) => void; openEvent: (id: number) => void }) {
   const [notebooks, setNotebooks] = useState<Notebook[]>([])
+  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Notebook | null>(null)
   const [backlinks, setBacklinks] = useState<Backlinks>({ cards: [], events: [] })
   const [error, setError] = useState('')
   const [addingNotebook, setAddingNotebook] = useState(false)
   const dialogRef = useRef<HTMLDialogElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
-  async function loadNotebooks() { try { setNotebooks(await request<Notebook[]>('/api/notebooks')); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load notebooks') } }
+  async function loadNotebooks() { try { setNotebooks(await request<Notebook[]>('/api/notebooks')); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load notebooks') } finally { setLoading(false) } }
   useEffect(() => { if (active) void loadNotebooks() }, [active])
-  useEffect(() => { if (initialNotebookId && notebooks.length) { const notebook = notebooks.find((item) => item.id === initialNotebookId); if (notebook) void openNotebook(notebook) } }, [initialNotebookId, notebooks])
-  useEffect(() => { if (selected) dialogRef.current?.showModal(); else dialogRef.current?.close() }, [selected])
-  async function openNotebook(notebook: Notebook) { setSelected(notebook); setBacklinks(await request<Backlinks>(`/api/notebooks/${notebook.id}/backlinks`)) }
+  useEffect(() => { if (initialNotebookId && notebooks.length) { const notebook = notebooks.find((item) => item.id === initialNotebookId); if (notebook) { void openNotebook(notebook); onNotebookOpened() } } }, [initialNotebookId, notebooks, onNotebookOpened])
+  useEffect(() => { if (selected && active) dialogRef.current?.showModal(); else { dialogRef.current?.close(); if (!active) setSelected(null) } }, [selected, active])
+  async function openNotebook(notebook: Notebook) { setSelected(notebook); setBacklinks({ cards: [], events: [] }); try { setBacklinks(await request<Backlinks>(`/api/notebooks/${notebook.id}/backlinks`)) } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load linked records') } }
   function closeNotebook() { setSelected(null) }
   async function addNotebook(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const title = String(new FormData(form).get('title') ?? '').trim(); if (!title) return; try { await request('/api/notebooks', { method: 'POST', ...json({ title }) }); form.reset(); setAddingNotebook(false); await loadNotebooks() } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not add notebook') } }
-  async function saveNotebook(changes: Partial<Pick<Notebook, 'title' | 'content' | 'images'>>) { if (!selected) return; try { const updated = await request<Notebook>(`/api/notebooks/${selected.id}`, { method: 'PATCH', ...json(changes) }); setSelected(updated); setNotebooks((current) => current.map((item) => item.id === updated.id ? updated : item)); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not save notebook') } }
+  async function saveNotebook(changes: Partial<Pick<Notebook, 'title' | 'content' | 'images'>>) { if (!selected) return; try { const updated = await request<Notebook>(`/api/notebooks/${selected.id}`, { method: 'PATCH', ...json(changes) }); if (dialogRef.current?.open) setSelected((current) => current?.id === updated.id ? updated : current); setNotebooks((current) => current.map((item) => item.id === updated.id ? updated : item)); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not save notebook') } }
   async function deleteNotebook() { if (!selected || !window.confirm(`Delete notebook “${selected.title}”? This cannot be undone.`)) return; try { await request(`/api/notebooks/${selected.id}`, { method: 'DELETE' }); const id = selected.id; closeNotebook(); setNotebooks((current) => current.filter((item) => item.id !== id)) } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not delete notebook') } }
   function insertImages(target: HTMLDivElement, files: File[]) { const images = files.filter((file) => file.type.startsWith('image/')); if (!images.length) return; void Promise.all(images.map(fileToDataUrl)).then((sources) => { target.focus(); for (const source of sources) document.execCommand('insertImage', false, source) }).catch(() => setError('Could not read image')) }
   function formatNotebook(command: 'bold' | 'italic' | 'underline' | 'insertUnorderedList' | 'insertOrderedList' | 'formatBlock', value?: string) { contentRef.current?.focus(); document.execCommand(command, false, value) }
-  return <main className="workspace notebooks-workspace"><header className="notebooks-header"><div><h1>Notebooks</h1></div><span>{notebooks.length} {notebooks.length === 1 ? 'notebook' : 'notebooks'}</span></header>{error && <p className="error" role="alert">{error}</p>}<section className="notebook-board" aria-label="Notebooks"><article className="notebook-column"><header><h2>My notebooks</h2></header><div className="notebook-list">{notebooks.map((notebook) => <button className="notebook-card" type="button" key={notebook.id} onClick={() => void openNotebook(notebook)}><span aria-hidden="true">▮</span><strong>{notebook.title}</strong></button>)}</div>{addingNotebook ? <form className="notebook-add" onSubmit={(event) => void addNotebook(event)}><input name="title" autoFocus required placeholder="New notebook" aria-label="Notebook title" /><div><button type="submit">Add</button><button type="button" onClick={() => setAddingNotebook(false)}>Cancel</button></div></form> : <button className="notebook-add-trigger" type="button" onClick={() => setAddingNotebook(true)}>＋ Add notebook</button>}</article></section><dialog ref={dialogRef} className="notebook-dialog" aria-label={selected ? `Notebook: ${selected.title}` : 'Notebook'} onCancel={closeNotebook}>{selected && <div className="notebook-editor"><header><input key={`${selected.id}-title`} defaultValue={selected.title} aria-label="Notebook title" onBlur={(event) => void saveNotebook({ title: event.target.value })} /><button type="button" onClick={closeNotebook} aria-label="Close notebook">×</button></header><div className="notebook-toolbar" role="toolbar" aria-label="Text formatting" onMouseDown={(event) => event.preventDefault()}><button type="button" onClick={() => formatNotebook('bold')} aria-label="Bold"><strong>B</strong></button><button type="button" onClick={() => formatNotebook('italic')} aria-label="Italic"><em>I</em></button><button type="button" onClick={() => formatNotebook('underline')} aria-label="Underline"><u>U</u></button><span aria-hidden="true" /><button type="button" onClick={() => formatNotebook('formatBlock', 'h2')} aria-label="Heading">H</button><button type="button" onClick={() => formatNotebook('insertUnorderedList')} aria-label="Bulleted list">• List</button><button type="button" onClick={() => formatNotebook('insertOrderedList')} aria-label="Numbered list">1. List</button></div><div className="notebook-layout"><div className="notebook-content" ref={contentRef} key={`${selected.id}-content`} contentEditable suppressContentEditableWarning data-placeholder="Start writing or paste pictures…" dangerouslySetInnerHTML={{ __html: selected.content + selected.images.map((image) => `<img src="${image}" alt="">`).join('') }} onBlur={(event) => void saveNotebook({ content: event.currentTarget.innerHTML, images: [] })} onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.some((file) => file.type.startsWith('image/'))) { event.preventDefault(); insertImages(event.currentTarget, files) } }} onDrop={(event) => { const files = Array.from(event.dataTransfer.files); if (files.some((file) => file.type.startsWith('image/'))) { event.preventDefault(); insertImages(event.currentTarget, files) } }} onDragOver={(event) => { if (Array.from(event.dataTransfer.items).some((item) => item.type.startsWith('image/'))) event.preventDefault() }} aria-label="Notebook content" /><aside className="backlinks"><h2>Linked from</h2>{!backlinks.cards.length && !backlinks.events.length && <p>No linked records yet.</p>}{backlinks.cards.map((card) => <button type="button" key={`card-${card.id}`} onClick={() => openCard(card.id)}><strong>{card.title}</strong><small>{card.list_title}</small></button>)}{backlinks.events.map((event) => <button type="button" key={`event-${event.id}`} onClick={() => openEvent(event.id)}><strong>{event.title}</strong><small>{readableDate(event.event_date)}</small></button>)}</aside></div><footer><button className="danger-action" type="button" onClick={() => void deleteNotebook()}>Delete notebook</button></footer></div>}</dialog></main>
+  return <main className="workspace notebooks-workspace"><header className="page-heading"><div><span className="eyebrow">A home for your thoughts</span><h1>Notebooks</h1><p>Loose ideas, working notes, and things worth keeping.</p></div><button className="primary-button" onClick={() => setAddingNotebook(true)}>＋ New notebook</button></header>{error && <p className="error" role="alert">{error} <button onClick={() => void loadNotebooks()}>Try again</button></p>}{loading && <Loading label="Opening your notebooks" />}<section className="notebook-board" aria-label="Notebooks"><article className="notebook-column"><header><h2>Your collection</h2><span>{notebooks.length} {notebooks.length === 1 ? 'notebook' : 'notebooks'}</span></header><div className="notebook-list">{!loading && !notebooks.length && <div className="empty-state"><Icon name="notebooks" /><h2>A fresh page awaits.</h2><p>Create a notebook to give your thoughts a home.</p></div>}{notebooks.map((notebook, index) => <button className="notebook-card" type="button" key={notebook.id} onClick={() => void openNotebook(notebook)}><span className="notebook-cover" aria-hidden="true"><Icon name="notebooks" /><span>{String(index + 1).padStart(2, '0')}</span></span><span className="notebook-card-body"><strong>{notebook.title}</strong><span className="notebook-excerpt">{notebookExcerpt(notebook.content)}</span><small>Created {readableDate(notebook.created_at.slice(0, 10))}<span aria-hidden="true">↗</span></small></span></button>)}</div>{addingNotebook ? <form className="notebook-add" onSubmit={(event) => void addNotebook(event)}><input name="title" autoFocus required placeholder="New notebook" aria-label="Notebook title" /><div><button type="submit">Add</button><button type="button" onClick={() => setAddingNotebook(false)}>Cancel</button></div></form> : <button className="notebook-add-trigger" type="button" onClick={() => setAddingNotebook(true)}>＋ Add notebook</button>}</article></section><dialog ref={dialogRef} className="notebook-dialog" aria-label={selected ? `Notebook: ${selected.title}` : 'Notebook'} onCancel={closeNotebook} onClose={closeNotebook}>{selected && <div className="notebook-editor"><header><input key={`${selected.id}-title`} defaultValue={selected.title} aria-label="Notebook title" onBlur={(event) => { const title = event.target.value.trim(); if (title) void saveNotebook({ title }); else event.target.value = selected.title }} /><button type="button" onClick={closeNotebook} aria-label="Close notebook">×</button></header><div className="notebook-toolbar" role="toolbar" aria-label="Text formatting" onMouseDown={(event) => event.preventDefault()}><button type="button" onClick={() => formatNotebook('bold')} aria-label="Bold"><strong>B</strong></button><button type="button" onClick={() => formatNotebook('italic')} aria-label="Italic"><em>I</em></button><button type="button" onClick={() => formatNotebook('underline')} aria-label="Underline"><u>U</u></button><span aria-hidden="true" /><button type="button" onClick={() => formatNotebook('formatBlock', 'h2')} aria-label="Heading">H</button><button type="button" onClick={() => formatNotebook('insertUnorderedList')} aria-label="Bulleted list">• List</button><button type="button" onClick={() => formatNotebook('insertOrderedList')} aria-label="Numbered list">1. List</button></div>{error && <p className="error" role="alert">{error}</p>}<div className="notebook-layout"><div className="notebook-content" role="textbox" aria-multiline="true" ref={contentRef} key={`${selected.id}-content`} contentEditable suppressContentEditableWarning data-placeholder="Start writing or paste pictures…" dangerouslySetInnerHTML={{ __html: selected.content + selected.images.map((image) => `<img src="${image}" alt="">`).join('') }} onBlur={(event) => void saveNotebook({ content: event.currentTarget.innerHTML, images: [] })} onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.some((file) => file.type.startsWith('image/'))) { event.preventDefault(); insertImages(event.currentTarget, files) } }} onDrop={(event) => { const files = Array.from(event.dataTransfer.files); if (files.some((file) => file.type.startsWith('image/'))) { event.preventDefault(); insertImages(event.currentTarget, files) } }} onDragOver={(event) => { if (Array.from(event.dataTransfer.items).some((item) => item.type.startsWith('image/'))) event.preventDefault() }} aria-label="Notebook content" /><aside className="backlinks"><h2>Linked from</h2>{!backlinks.cards.length && !backlinks.events.length && <p>No linked records yet.</p>}{backlinks.cards.map((card) => <button type="button" key={`card-${card.id}`} onClick={() => openCard(card.id)}><strong>{card.title}</strong><small>{card.list_title}</small></button>)}{backlinks.events.map((event) => <button type="button" key={`event-${event.id}`} onClick={() => openEvent(event.id)}><strong>{event.title}</strong><small>{readableDate(event.event_date)}</small></button>)}</aside></div><footer><span className="editor-hint">Changes save when you leave a field.</span><button className="danger-action" type="button" onClick={() => void deleteNotebook()}>Delete notebook</button></footer></div>}</dialog></main>
+}
+
+const viewLabels: Record<View, string> = { today: 'Today', tasks: 'Tasks', calendar: 'Calendar', notebooks: 'Notebooks' }
+function viewFromHash(): View {
+  const hash = window.location.hash.slice(1)
+  if (new URLSearchParams(window.location.search).has('google_calendar')) return 'calendar'
+  return hash === 'tasks' || hash === 'calendar' || hash === 'notebooks' ? hash : 'today'
 }
 
 function App() {
-  const [activeView, setActiveView] = useState<View>('today')
-  const viewStackRef = useRef<HTMLElement>(null)
+  const [activeView, setActiveView] = useState<View>(viewFromHash)
   const [openCardId, setOpenCardId] = useState<number | null>(null)
   const [openEventId, setOpenEventId] = useState<number | null>(null)
   const [openNotebookId, setOpenNotebookId] = useState<number | null>(null)
   const clearCardRequest = useCallback(() => setOpenCardId(null), [])
-  const sectionRefs = {
-    today: useRef<HTMLElement>(null),
-    tasks: useRef<HTMLElement>(null),
-    calendar: useRef<HTMLElement>(null),
-    notebooks: useRef<HTMLElement>(null),
-  }
-
+  const clearEventRequest = useCallback(() => setOpenEventId(null), [])
+  const clearNotebookRequest = useCallback(() => setOpenNotebookId(null), [])
+  const contentRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries
-        .filter((entry) => entry.isIntersecting)
-        .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
-      const view = visible?.target.getAttribute('data-view') as View | null
-      if (view) setActiveView(view)
-    }, { threshold: [0.6] })
-    viewStackRef.current?.querySelectorAll<HTMLElement>('.workspace-view').forEach((section) => observer.observe(section))
-    return () => observer.disconnect()
+    const change = () => {
+      document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach((dialog) => dialog.close())
+      setActiveView(viewFromHash())
+    }
+    window.addEventListener('hashchange', change)
+    return () => window.removeEventListener('hashchange', change)
   }, [])
+  useEffect(() => { document.title = `${viewLabels[activeView]} - Lazy Organizer`; contentRef.current?.scrollTo(0, 0) }, [activeView])
 
   function navigate(next: View, id: number | null = null) {
+    document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach((dialog) => dialog.close())
     if (next === 'tasks') setOpenCardId(id)
     if (next === 'calendar') setOpenEventId(id)
     if (next === 'notebooks') setOpenNotebookId(id)
-    sectionRefs[next].current?.scrollIntoView({
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-      block: 'start',
-    })
+    window.history.pushState(null, '', `#${next}`)
+    setActiveView(next)
   }
-
-  return <div className="app-shell"><main className="view-stack" ref={viewStackRef} tabIndex={-1} aria-label="Organizer workspace"><section className="workspace-view" data-view="today" ref={sectionRefs.today} aria-label="Today"><TodayApp active={activeView === 'today'} openCard={setOpenCardId} openEvent={(id) => navigate('calendar', id)} openCalendar={() => navigate('calendar')} /></section><section className="workspace-view" data-view="tasks" ref={sectionRefs.tasks} aria-label="Tasks"><TasksApp active={activeView === 'tasks'} initialCardId={openCardId} onCardOpened={clearCardRequest} openNotebook={(id) => navigate('notebooks', id)} openEvent={(id) => navigate('calendar', id)} /></section><section className="workspace-view" data-view="calendar" ref={sectionRefs.calendar} aria-label="Calendar"><CalendarApp active={activeView === 'calendar'} initialEventId={openEventId} openNotebook={(id) => navigate('notebooks', id)} /></section><section className="workspace-view" data-view="notebooks" ref={sectionRefs.notebooks} aria-label="Notebooks"><NotebooksApp active={activeView === 'notebooks'} initialNotebookId={openNotebookId} openCard={(id) => navigate('tasks', id)} openEvent={(id) => navigate('calendar', id)} /></section></main></div>
+  function capture() {
+    navigate('today')
+    window.requestAnimationFrame(() => document.getElementById('quick-capture')?.focus())
+  }
+  return <div className="app-shell" data-preview={isPreview ? 'true' : undefined}>
+    <a className="skip-link" href="#workspace-content" onClick={(event) => { event.preventDefault(); contentRef.current?.focus() }}>Skip to workspace</a>
+    <aside className="sidebar">
+      <a className="brand" href="#today" onClick={(event) => { event.preventDefault(); navigate('today') }}><span className="brand-mark"><Icon name="leaf" /></span><span>lazy organizer<span className="brand-caption">A little more intentional.</span></span></a>
+      <div className="workspace-label"><span className="workspace-avatar">L</span><span>Personal workspace<small>Your own little corner</small></span></div>
+      <button className="capture-button" onClick={capture}><span aria-hidden="true">＋</span> Capture a task</button>
+      <span className="nav-label">WORKSPACE</span>
+      <nav className="primary-nav" aria-label="Main navigation">{(Object.keys(viewLabels) as View[]).map((view) => <a key={view} href={`#${view}`} aria-current={activeView === view ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate(view) }}><Icon name={view} /><span>{viewLabels[view]}</span>{activeView === view && <span className="nav-dot" aria-hidden="true" />}</a>)}</nav>
+      <div className="sidebar-bottom"><Icon name="leaf" /><p>Less noise.<br /><em>More room for what matters.</em></p><span>{isPreview ? 'SAMPLE WORKSPACE' : 'YOUR PERSONAL ORGANIZER'}</span></div>
+    </aside>
+    <div className="workspace-frame">
+      <header className="topbar"><div><span className="breadcrumb-parent">Workspace</span><span aria-hidden="true">/</span><strong>{viewLabels[activeView]}</strong></div><time dateTime={isoDate(new Date())}>{new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</time></header>
+      {isPreview && <div className="preview-banner" role="note"><strong>Local sample preview</strong><span>Fictional sample content. Changes stay in this tab and reset on reload. No backend connection.</span></div>}
+      <div id="workspace-content" className="view-stack" ref={contentRef} tabIndex={-1}>
+        <section className="workspace-view" hidden={activeView !== 'today'} aria-label="Today"><TodayApp active={activeView === 'today'} openCard={(id) => navigate('tasks', id)} openEvent={(id) => navigate('calendar', id)} openCalendar={() => navigate('calendar')} /></section>
+        <section className="workspace-view" hidden={activeView !== 'tasks'} aria-label="Tasks"><TasksApp active={activeView === 'tasks'} initialCardId={openCardId} onCardOpened={clearCardRequest} openNotebook={(id) => navigate('notebooks', id)} openEvent={(id) => navigate('calendar', id)} /></section>
+        <section className="workspace-view" hidden={activeView !== 'calendar'} aria-label="Calendar"><CalendarApp active={activeView === 'calendar'} initialEventId={openEventId} onEventOpened={clearEventRequest} openNotebook={(id) => navigate('notebooks', id)} /></section>
+        <section className="workspace-view" hidden={activeView !== 'notebooks'} aria-label="Notebooks"><NotebooksApp active={activeView === 'notebooks'} initialNotebookId={openNotebookId} onNotebookOpened={clearNotebookRequest} openCard={(id) => navigate('tasks', id)} openEvent={(id) => navigate('calendar', id)} /></section>
+      </div>
+    </div>
+  </div>
 }
 
 export default App
