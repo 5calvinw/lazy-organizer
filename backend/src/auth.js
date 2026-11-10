@@ -9,8 +9,8 @@ const usernameValue = process.env.AUTH_USERNAME?.trim().toLowerCase()
 const passwordValue = process.env.AUTH_PASSWORD
 const secret = process.env.BETTER_AUTH_SECRET?.trim()
 
-if (!/^[a-z0-9_]{1,30}$/.test(usernameValue ?? '') || !passwordValue || passwordValue.length < 12 || passwordValue.length > 128 || !secret || secret.length < 32) {
-  throw new Error('Set AUTH_USERNAME (1-30 letters, numbers or underscores), AUTH_PASSWORD (12-128 characters), and BETTER_AUTH_SECRET (at least 32 characters)')
+if (!/^[a-z0-9_]{1,30}$/.test(usernameValue ?? '') || !passwordValue || passwordValue.length < 8 || passwordValue.length > 128 || !secret || secret.length < 32) {
+  throw new Error('Set AUTH_USERNAME (1-30 letters, numbers or underscores), AUTH_PASSWORD (8-128 characters), and BETTER_AUTH_SECRET (at least 32 characters)')
 }
 const baseURL = process.env.BETTER_AUTH_URL || 'http://localhost:5173'
 const origin = new URL(baseURL).origin

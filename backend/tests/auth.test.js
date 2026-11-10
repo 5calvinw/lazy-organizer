@@ -15,7 +15,7 @@ test('browser auth is private, expires after 30 days, and never replaces MCP aut
   const origin = 'http://localhost:5173'
   const env = {
     ...process.env, DATABASE_URL: databaseUrl, HOST: '127.0.0.1', PORT: '0',
-    AUTH_USERNAME: 'a', AUTH_PASSWORD: 'test-password-only-123',
+    AUTH_USERNAME: 'a', AUTH_PASSWORD: 'test-123',
     BETTER_AUTH_SECRET: 'test-secret-only-abcdefghijklmnopqrstuvwxyz-123456',
     BETTER_AUTH_URL: origin, MCP_API_KEY: 'test-mcp-key',
   }
