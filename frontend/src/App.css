@@ -3,6 +3,7 @@
 .topbar { flex: 0 0 auto; display: flex; align-items: stretch; gap: 2.5rem; height: 3.25rem; padding: 0 var(--gutter); border-bottom: 1px solid var(--rule); }
 .wordmark { display: flex; align-items: center; font-family: var(--font-display); font-size: 1.1rem; letter-spacing: -.02em; text-decoration: none; }
 .topbar nav { display: flex; gap: 1.75rem; }
+.sign-out { margin-left: auto; align-self: center; }
 .topbar nav a { position: relative; display: flex; align-items: center; color: var(--ink-soft); font-size: .9rem; text-decoration: none; }
 .topbar nav a:hover { color: var(--ink); }
 .topbar nav a[aria-current="page"] { color: var(--ink); }
@@ -359,7 +360,8 @@ button.page:hover { border-color: var(--rule-strong); box-shadow: 0 6px 14px -8p
 }
 @media (max-width: 760px) {
   .app { flex-direction: column-reverse; }
-  .topbar { height: auto; padding: 0; border-bottom: 0; border-top: 1px solid var(--rule); background: var(--paper); }
+  .topbar { height: auto; gap: .5rem; padding: 0; border-bottom: 0; border-top: 1px solid var(--rule); background: var(--paper); }
+  .sign-out { margin: 0 .5rem 0 0; font-size: .75rem; }
   .wordmark { display: none; }
   .topbar nav { flex: 1; gap: 0; padding-bottom: env(safe-area-inset-bottom); }
   .topbar nav a { flex: 1; justify-content: center; min-height: 3.25rem; font-size: .85rem; }

@@ -57,6 +57,13 @@ ul, ol { padding: 0; list-style: none; }
 a { color: inherit; }
 [hidden] { display: none !important; }
 
+.login-page { height: 100%; overflow-y: auto; display: grid; place-items: center; padding: 1.5rem; background: var(--paper); }
+.login-form { width: min(100%, 20rem); display: grid; gap: .8rem; }
+.login-form h1 { margin-bottom: .5rem; font-family: var(--font-display); font-size: 2rem; letter-spacing: -.035em; }
+.login-form label { display: grid; gap: .3rem; color: var(--ink-soft); font-size: .8rem; }
+.login-form .button { margin-top: .4rem; }
+.login-error { color: var(--accent); font-size: .825rem; }
+
 /* Tones: the six organizer colors plus the deadline accent, each as a solid and a paper tint. */
 .tone-gray { --tone: #8f8777; }
 .tone-blue { --tone: #3c6791; }

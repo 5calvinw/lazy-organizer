@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
+import { getSession, signOut } from './auth'
 import { EventDialog } from './components/EventDialog'
 import { ConfirmHost, ToastHost } from './components/Modal'
 import { NotebookDialog } from './components/NotebookDialog'
 import { TaskDialog } from './components/TaskDialog'
-import { RecordsContext, type RecordRef } from './overlays'
+import { RecordsContext, toastError, type RecordRef } from './overlays'
 import { Calendar } from './views/Calendar'
 import { Notebooks } from './views/Notebooks'
 import { Tasks } from './views/Tasks'
 import { Today } from './views/Today'
+import { Login } from './Login'
 
 const views = ['today', 'tasks', 'calendar', 'notebooks'] as const
 type View = typeof views[number]
@@ -23,6 +25,27 @@ function currentView(): View {
 const same = (a: RecordRef, b: RecordRef) => a.type === b.type && a.id === b.id
 
 function App() {
+  const [authState, setAuthState] = useState<'checking' | 'signed-in' | 'signed-out'>('checking')
+  useEffect(() => {
+    getSession().then((session) => {
+      if (session) {
+        if (window.location.pathname === '/login') window.history.replaceState({}, '', '/')
+        setAuthState('signed-in')
+      } else {
+        if (window.location.pathname !== '/login') window.history.replaceState({}, '', '/login')
+        setAuthState('signed-out')
+      }
+    }).catch(() => {
+      if (window.location.pathname !== '/login') window.history.replaceState({}, '', '/login')
+      setAuthState('signed-out')
+    })
+  }, [])
+  if (authState === 'checking') return null
+  if (authState === 'signed-out') return <Login onSuccess={() => window.location.replace('/')} />
+  return <Organizer />
+}
+
+function Organizer() {
   const [view, setView] = useState<View>(currentView)
   // Open tasks, events and notebooks stack: following a link opens it on top, closing returns to where you were.
   const [stack, setStack] = useState<RecordRef[]>([])
@@ -51,6 +74,10 @@ function App() {
         <nav aria-label="Sections">
           {views.map((name) => <a key={name} href={`#/${name}`} aria-current={view === name ? 'page' : undefined}>{labels[name]}</a>)}
         </nav>
+        <button className="text-button sign-out" type="button" onClick={async () => {
+          try { await signOut(); window.location.replace('/login') }
+          catch { toastError('Could not sign out. Please try again.') }
+        }}>Sign out</button>
       </header>
       <main className="stage">
         <section hidden={view !== 'today'} aria-label="Today"><Today active={view === 'today'} /></section>

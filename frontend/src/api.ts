@@ -65,9 +65,10 @@ export const recurrenceUnits: Record<Recurrence, string> = { none: '', daily: 'd
 export const MAX_FILE_BYTES = 5_000_000
 
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options)
+  const response = await fetch(url, { credentials: 'same-origin', ...options })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
+    if (response.status === 401 && body?.code === 'AUTH_REQUIRED') window.location.replace('/login')
     throw new Error(sentence(body?.error ?? `Request failed (${response.status})`))
   }
   return response.json()

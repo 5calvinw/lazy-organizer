@@ -1,6 +1,7 @@
 import express from 'express'
 import { timingSafeEqual } from 'node:crypto'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { authHandler, ensureAuthUser, requireApiOrigin, requireSession } from './auth.js'
 import { createOrganizerMcpServer } from './mcp.js'
 import { createGoogleIntegration } from './google-sync.js'
 import {
@@ -140,9 +141,14 @@ async function syncCardDescriptionLinks(tx, cardId, description, dueDate) {
 }
 
 await seedDefaultBoard()
+await ensureAuthUser()
 
 const app = express()
+app.use('/api', requireApiOrigin)
+app.all(['/api/auth/sign-in/username', '/api/auth/get-session', '/api/auth/sign-out'], authHandler)
+app.use('/api/auth', (_request, response) => response.status(404).json({ error: 'not found' }))
 app.use(express.json({ limit: '10mb' }))
+app.use('/api', requireSession)
 app.use('/api/integrations/google', createGoogleIntegration(prisma).router)
 
 const mcpApiKey = process.env.MCP_API_KEY?.trim()
@@ -699,9 +705,9 @@ app.delete('/api/cards/:id/links/:type/:targetId', async (request, response) => 
   response.json({ ok: true })
 })
 
-const port = Number(process.env.PORT) || 3000
+const port = Number(process.env.PORT ?? 3000)
 const host = process.env.HOST || '127.0.0.1'
-const server = app.listen(port, host, () => console.log(`API listening on http://${host}:${port}`))
+const server = app.listen(port, host, () => console.log(`API listening on http://${host}:${server.address().port}`))
 
 let shuttingDown = false
 function shutdown() {
