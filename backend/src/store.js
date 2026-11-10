@@ -144,7 +144,12 @@ export async function syncCardDeadline(tx, { cardId, title, description, color, 
   const existing = deadlines[0]
   const eventTime = existing?.eventTime ?? '09:00'
   if (existing) {
-    if (existing.recurrenceParentId === null) await tx.event.deleteMany({ where: { recurrenceParentId: existing.id } })
+    if (existing.recurrenceParentId === null) {
+      // Occurrences are only regenerated when the schedule moves; a text or color edit keeps them (and their Google mappings).
+      const rescheduled = existing.eventDate !== dueDate || existing.recurrence !== recurrence || existing.recurrenceInterval !== recurrenceInterval
+      if (rescheduled) await tx.event.deleteMany({ where: { recurrenceParentId: existing.id } })
+      else await tx.event.updateMany({ where: { recurrenceParentId: existing.id }, data: { title, description, color } })
+    }
     await tx.event.update({
       where: { id: existing.id },
       data: { title, description, eventDate: dueDate, eventTime, endTime: eventTime, isDeadline: 1, color, recurrence, recurrenceInterval },
@@ -165,6 +170,33 @@ export async function syncCardDeadline(tx, { cardId, title, description, color, 
       cardLinks: { create: { cardId } },
     },
   })
+}
+
+// The deadline a due date created belongs to its task and goes with it; deadlines the task merely mentions stay.
+export async function deleteCard(db, id) {
+  return db.$transaction(async (tx) => {
+    const card = await tx.card.findUnique({ where: { id }, select: { title: true, dueDate: true } })
+    if (!card) return false
+    if (card.dueDate) {
+      await tx.event.deleteMany({ where: { isDeadline: 1, title: card.title, eventDate: card.dueDate, cardLinks: { some: { cardId: id }, every: { cardId: id } } } })
+    }
+    await tx.card.delete({ where: { id } })
+    return true
+  })
+}
+
+const ownerLinks = { select: { card: { select: { id: true, dueDate: true, list: { select: { title: true } } } } } }
+export const deadlineOwnerInclude = { cardLinks: ownerLinks, recurrenceParent: { select: { cardLinks: ownerLinks } } }
+const isDoneList = (title) => title.toLocaleLowerCase() === 'done'
+
+// Which task a deadline stands for. `owners` are tasks due on the deadline's date; `cardId` is the open task to show for it.
+export function deadlineOwner(event) {
+  if (!event.isDeadline) return { owners: [], finished: false, cardId: null }
+  const own = event.cardLinks.map(({ card }) => card)
+  const series = (event.recurrenceParent?.cardLinks ?? []).map(({ card }) => card)
+  const owners = [...own, ...series].filter((card) => card.dueDate === event.eventDate)
+  const open = owners.find((card) => !isDoneList(card.list.title)) ?? series.find((card) => !isDoneList(card.list.title))
+  return { owners, finished: owners.length > 0 && owners.every((card) => isDoneList(card.list.title)), cardId: open?.id ?? null }
 }
 
 export function eventOverlapWhere(startDate, endDate) {

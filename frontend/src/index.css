@@ -5,19 +5,64 @@
   font-style: normal;
   font-display: swap;
 }
-
-:root {
-  font-family: "Anthropic Serif", Georgia, serif;
+@font-face {
+  font-family: "Anthropic Serif Display";
+  src: url("/fonts/AnthropicSerif-Display-Medium-Static.otf") format("opentype");
   font-weight: 500;
-  letter-spacing: 0.03em;
-  color: #24221d;
-  background: #f3ead7;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* One sheet of paper, one ink, one accent. Everything else is a hairline or a tint of these. */
+:root {
+  --paper: #f3ead7;
+  --paper-raised: #faf5e8;
+  --paper-sunk: #eae0ca;
+  --ink: #24221d;
+  --ink-soft: #625c50;
+  --ink-faint: #8f8777;
+  --rule: rgba(36, 34, 29, .14);
+  --rule-strong: rgba(36, 34, 29, .32);
+  --hover: rgba(36, 34, 29, .06);
+  --field: rgba(255, 255, 255, .38);
+  --accent: #802c26;
+  --accent-soft: rgba(128, 44, 38, .09);
+  --radius: 6px;
+  --shadow: 0 0 0 1px var(--rule), 0 1.75rem 4rem -1.25rem rgba(58, 44, 20, .45);
+  --font-display: "Anthropic Serif Display", "Anthropic Serif", Georgia, serif;
+  --font-text: "Anthropic Serif", Georgia, serif;
+  --gutter: clamp(1rem, 4vw, 3.5rem);
+
+  font-family: var(--font-text);
+  font-weight: 500;
+  font-size: 100%;
+  line-height: 1.45;
+  letter-spacing: .01em;
+  color: var(--ink);
+  background: var(--paper);
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  color-scheme: light;
+  accent-color: var(--ink);
 }
 
-* { box-sizing: border-box; font-weight: 500; }
-html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
-button, input, textarea { font-family: inherit; letter-spacing: inherit; }
+/* The typeface ships in a single weight, so hierarchy comes from size and ink rather than boldness. */
+*, *::before, *::after { box-sizing: border-box; font-weight: 500; }
+html, body, #root { height: 100%; min-width: 320px; margin: 0; }
+body { overflow: hidden; }
+button, input, select, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
+h1, h2, h3, p, ul, ol, dl, dd { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+a { color: inherit; }
+[hidden] { display: none !important; }
+
+/* Tones: the six organizer colors plus the deadline accent, each as a solid and a paper tint. */
+.tone-gray { --tone: #8f8777; }
+.tone-blue { --tone: #3c6791; }
+.tone-green { --tone: #43734f; }
+.tone-yellow { --tone: #a47c16; }
+.tone-orange { --tone: #b4622a; }
+.tone-purple { --tone: #6b5a96; }
+.tone-deadline { --tone: var(--accent); }
+[class*="tone-"] { --tint: color-mix(in srgb, var(--tone) 17%, var(--paper-raised)); }

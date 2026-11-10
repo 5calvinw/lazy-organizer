@@ -9,6 +9,9 @@ import {
   cardJson,
   checklistJson,
   commentJson,
+  deadlineOwner,
+  deadlineOwnerInclude,
+  deleteCard,
   ensureRecurringEvents,
   eventJson,
   eventOverlapWhere,
@@ -33,6 +36,17 @@ function validDate(value) {
   const parsed = new Date(`${value}T00:00:00Z`)
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value
 }
+
+// "Today" is the user's day, not the server's: the browser sends its local date and the server clock is only a fallback.
+function localDate(request) {
+  const value = request.query.date
+  return typeof value === 'string' && validDate(value) ? value : new Date().toLocaleDateString('en-CA')
+}
+
+const withOwner = (event) => ({ ...eventJson(event), card_id: deadlineOwner(event).cardId })
+// Checklists used to be switched on by a "!checklist" line in the description; they are independent now.
+const withoutChecklistMarker = (description) => description.replace(/^!checklist[ \t]*$/gm, '').replace(/\n{3,}/g, '\n\n').trim()
+const notebookMentions = (description) => new Set(Array.from(description.matchAll(/\$\[notebook:(\d+)\]/g), (match) => Number(match[1])))
 
 async function seedDefaultBoard() {
   await prisma.$transaction(async (tx) => {
@@ -96,9 +110,8 @@ async function cardDetail(cardId) {
   const inheritedMentions = [
     ...notebooks.filter((item) => !mentioned.has(`notebook:${item.id}`)).map((item) => `$[notebook:${item.id}]`),
     ...events.filter((item) => !(item.is_deadline && item.event_date === card.dueDate) && !mentioned.has(`event:${item.id}`)).map((item) => `$[event:${item.id}]`),
-    ...(checklist.length && !/^!checklist$/m.test(card.description) ? ['!checklist'] : []),
   ]
-  const description = [card.description, ...inheritedMentions].filter(Boolean).join(card.description ? '\n' : '')
+  const description = [withoutChecklistMarker(card.description), ...inheritedMentions].filter(Boolean).join('\n')
   return { ...cardJson(card), description, comments, checklist, attachments, links: { events, notebooks } }
 }
 
@@ -169,6 +182,13 @@ app.get('/api/notebooks', async (_request, response) => {
   response.json(notebooks.map((notebook) => notebookJson(notebook)))
 })
 
+app.get('/api/notebooks/:id', async (request, response) => {
+  const id = idFrom(request.params.id)
+  const notebook = Number.isInteger(id) && await prisma.notebook.findUnique({ where: { id } })
+  if (!notebook) return response.status(404).json({ error: 'notebook not found' })
+  response.json(notebookJson(notebook))
+})
+
 app.post('/api/notebooks', async (request, response) => {
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : ''
   if (!title) return response.status(400).json({ error: 'title is required' })
@@ -224,8 +244,8 @@ app.get('/api/link-options', async (_request, response) => {
   response.json({ notebooks, events: events.map(eventJson) })
 })
 
-app.get('/api/today', async (_request, response) => {
-  const today = new Date().toLocaleDateString('en-CA')
+app.get('/api/today', async (request, response) => {
+  const today = localDate(request)
   const tomorrow = new Date(`${today}T00:00:00Z`)
   tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
   await ensureRecurringEvents(today)
@@ -238,11 +258,18 @@ app.get('/api/today', async (_request, response) => {
     prisma.card.findMany({ where: { dueDate: { lt: today }, listId: { notIn: doneListIds } }, include }),
     prisma.card.findMany({ where: { dueDate: today, listId: { notIn: doneListIds } }, include }),
     prisma.card.findMany({ where: { listId: { in: doingListIds }, OR: [{ dueDate: null }, { dueDate: { gt: today } }] }, orderBy: { position: 'asc' }, include }),
-    prisma.event.findMany({ where: eventOverlapWhere(today, tomorrow.toISOString().slice(0, 10)), orderBy: [{ eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] }),
+    prisma.event.findMany({ where: eventOverlapWhere(today, tomorrow.toISOString().slice(0, 10)), orderBy: [{ eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }], include: deadlineOwnerInclude }),
   ])
   overdue.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || priorityOrder[a.priority] - priorityOrder[b.priority])
   dueToday.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority] || a.position - b.position)
-  response.json({ date: today, overdue: overdue.map(cardJson), dueToday: dueToday.map(cardJson), doing: doing.map(cardJson), events: events.map(eventJson) })
+  response.json({
+    date: today,
+    overdue: overdue.map(cardJson),
+    dueToday: dueToday.map(cardJson),
+    doing: doing.map(cardJson),
+    // A task's own deadline is already on the task list; the schedule keeps real events and standalone deadlines.
+    events: events.filter((event) => !deadlineOwner(event).owners.length).map(withOwner),
+  })
 })
 
 app.post('/api/today/tasks', async (request, response) => {
@@ -268,14 +295,25 @@ app.get('/api/events', async (request, response) => {
   const startDate = first.toISOString().slice(0, 10)
   const endDate = end.toISOString().slice(0, 10)
   await ensureRecurringEvents(endDate)
-  const events = await prisma.event.findMany({ where: eventOverlapWhere(startDate, endDate), orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }] })
-  response.json(events.map(eventJson))
+  const events = await prisma.event.findMany({ where: eventOverlapWhere(startDate, endDate), orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }], include: deadlineOwnerInclude })
+  response.json(events.map(withOwner))
 })
 
-app.get('/api/deadlines', async (_request, response) => {
+app.get('/api/deadlines', async (request, response) => {
   await ensureRecurringEvents(new Date(Date.now() + 366 * 86_400_000).toISOString().slice(0, 10))
-  const events = await prisma.event.findMany({ where: { isDeadline: 1, eventDate: { gte: new Date().toLocaleDateString('en-CA') } }, orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }], take: 20 })
-  response.json(events.map(eventJson))
+  const events = await prisma.event.findMany({ where: { isDeadline: 1, eventDate: { gte: localDate(request) } }, orderBy: [{ eventDate: 'asc' }, { eventTime: 'asc' }, { endTime: 'asc' }, { id: 'asc' }], take: 400, include: deadlineOwnerInclude })
+  const seen = new Set()
+  const upcoming = []
+  for (const event of events) {
+    // One row per repeating series (its next occurrence), and nothing for tasks that are already done.
+    const series = event.recurrenceParentId ?? event.id
+    const owner = deadlineOwner(event)
+    if (seen.has(series) || owner.finished) continue
+    seen.add(series)
+    upcoming.push({ ...eventJson(event), card_id: owner.cardId, repeats: event.recurrence !== 'none' || event.recurrenceParentId !== null })
+    if (upcoming.length === 20) break
+  }
+  response.json(upcoming)
 })
 
 app.get('/api/events/:id', async (request, response) => {
@@ -285,10 +323,11 @@ app.get('/api/events/:id', async (request, response) => {
     include: {
       comments: { orderBy: { id: 'desc' } },
       notebookLinks: { orderBy: { notebook: { title: 'asc' } }, select: { notebook: { select: { id: true, title: true } } } },
+      ...deadlineOwnerInclude,
     },
   })
   if (!event) return response.status(404).json({ error: 'event not found' })
-  response.json({ ...eventJson(event), comments: event.comments.map(commentJson), notebooks: event.notebookLinks.map(({ notebook }) => notebook) })
+  response.json({ ...withOwner(event), comments: event.comments.map(commentJson), notebooks: event.notebookLinks.map(({ notebook }) => notebook) })
 })
 
 function eventExtent(body, current = {}) {
@@ -363,9 +402,23 @@ app.patch('/api/events/:id', async (request, response) => {
   const extent = current.isDeadline ? {} : eventExtent(request.body, current)
   if (!extent) return response.status(400).json({ error: 'valid endDate, allDay, timeZone and positive event duration required' })
   if ((recurrence ?? current.recurrence) !== 'none' && (extent.allDay || extent.endDate && extent.endDate !== (eventDate ?? current.eventDate))) return response.status(400).json({ error: 'multi-day and all-day recurrence is not supported' })
+  const changed = (next, previous) => next !== null && next !== previous
+  const rescheduled = changed(eventDate, current.eventDate) || changed(eventTime, current.eventTime) || changed(endTime, current.endTime) || changed(recurrence, current.recurrence) || changed(recurrenceInterval, current.recurrenceInterval)
   const updated = await prisma.$transaction(async (tx) => {
-    if (current.recurrenceParentId === null && (eventDate !== null || eventTime !== null || endTime !== null || recurrence !== null || recurrenceInterval !== null)) {
+    // Occurrences are regenerated only when the schedule really moved, not on every title or description save.
+    if (current.recurrenceParentId === null && rescheduled) {
       await tx.event.deleteMany({ where: { recurrenceParentId: current.id } })
+    }
+    // Moving a task's deadline moves the task's due date with it (the same rule Google sync applies).
+    if (current.isDeadline && changed(eventDate, current.eventDate)) {
+      await tx.card.updateMany({ where: { dueDate: current.eventDate, eventLinks: { some: { eventId: id } } }, data: { dueDate: eventDate } })
+    }
+    if (description !== null) {
+      const before = notebookMentions(current.description)
+      const after = notebookMentions(description)
+      const notebooks = await tx.notebook.findMany({ where: { id: { in: [...after] } }, select: { id: true } })
+      await tx.eventNotebookLink.deleteMany({ where: { eventId: id, notebookId: { in: [...before].filter((notebookId) => !after.has(notebookId)) } } })
+      for (const notebook of notebooks) await tx.eventNotebookLink.upsert({ where: { eventId_notebookId: { eventId: id, notebookId: notebook.id } }, update: {}, create: { eventId: id, notebookId: notebook.id } })
     }
     return tx.event.update({
       where: { id },
@@ -387,8 +440,13 @@ app.patch('/api/events/:id', async (request, response) => {
 
 app.delete('/api/events/:id', async (request, response) => {
   const id = idFrom(request.params.id)
-  const result = Number.isInteger(id) ? await prisma.event.deleteMany({ where: { id } }) : { count: 0 }
-  if (!result.count) return response.status(404).json({ error: 'event not found' })
+  const event = Number.isInteger(id) && await prisma.event.findUnique({ where: { id }, select: { isDeadline: true, eventDate: true } })
+  if (!event) return response.status(404).json({ error: 'event not found' })
+  await prisma.$transaction(async (tx) => {
+    // Deleting a task's deadline clears that task's due date instead of leaving it pointing at nothing.
+    if (event.isDeadline) await tx.card.updateMany({ where: { dueDate: event.eventDate, eventLinks: { some: { eventId: id } } }, data: { dueDate: null, recurrence: 'none', recurrenceInterval: 1 } })
+    await tx.event.delete({ where: { id } })
+  })
   response.json({ ok: true })
 })
 
@@ -471,7 +529,7 @@ app.patch('/api/cards/:id', async (request, response) => {
   const current = Number.isInteger(id) && await prisma.card.findUnique({ where: { id }, include: cardInclude })
   if (!current) return response.status(404).json({ error: 'card not found' })
   const title = typeof request.body.title === 'string' ? request.body.title.trim() : null
-  const description = typeof request.body.description === 'string' ? request.body.description.trim() : null
+  const description = typeof request.body.description === 'string' ? withoutChecklistMarker(request.body.description) : null
   const color = typeof request.body.color === 'string' ? request.body.color : null
   const dueDate = request.body.dueDate === null ? null : (typeof request.body.dueDate === 'string' ? request.body.dueDate : undefined)
   const priority = typeof request.body.priority === 'string' ? request.body.priority : null
@@ -503,10 +561,7 @@ app.patch('/api/cards/:id', async (request, response) => {
         ...(recurrenceInterval !== null && { recurrenceInterval }),
       },
     })
-    if (description !== null) {
-      await syncCardDescriptionLinks(tx, id, description, nextDueDate)
-      if (!/^!checklist$/m.test(description)) await tx.checklistItem.deleteMany({ where: { cardId: id } })
-    }
+    if (description !== null) await syncCardDescriptionLinks(tx, id, description, nextDueDate)
     await syncCardDeadline(tx, { cardId: id, title: nextTitle, description: nextDescription, color: nextColor, dueDate: nextDueDate, recurrence: nextRecurrence, recurrenceInterval: nextRecurrenceInterval })
   })
   response.json(await getCardSummary(prisma, id))
@@ -514,8 +569,7 @@ app.patch('/api/cards/:id', async (request, response) => {
 
 app.delete('/api/cards/:id', async (request, response) => {
   const id = idFrom(request.params.id)
-  const result = Number.isInteger(id) ? await prisma.card.deleteMany({ where: { id } }) : { count: 0 }
-  if (!result.count) return response.status(404).json({ error: 'card not found' })
+  if (!Number.isInteger(id) || !await deleteCard(prisma, id)) return response.status(404).json({ error: 'card not found' })
   response.json({ ok: true })
 })
 
@@ -592,16 +646,8 @@ app.post('/api/checklist/:id/convert', async (request, response) => {
 
 app.delete('/api/checklist/:id', async (request, response) => {
   const id = idFrom(request.params.id)
-  const item = Number.isInteger(id) && await prisma.checklistItem.findUnique({ where: { id }, select: { id: true, cardId: true } })
-  if (!item) return response.status(404).json({ error: 'checklist item not found' })
-  await prisma.$transaction(async (tx) => {
-    await tx.checklistItem.delete({ where: { id } })
-    if (!await tx.checklistItem.findFirst({ where: { cardId: item.cardId }, select: { id: true } })) {
-      const card = await tx.card.findUnique({ where: { id: item.cardId }, select: { description: true } })
-      const description = card.description.replace(/(^|\n)!checklist(?=\n|$)/g, '$1').replace(/\n{3,}/g, '\n\n').trim()
-      await tx.card.update({ where: { id: item.cardId }, data: { description } })
-    }
-  })
+  const result = Number.isInteger(id) ? await prisma.checklistItem.deleteMany({ where: { id } }) : { count: 0 }
+  if (!result.count) return response.status(404).json({ error: 'checklist item not found' })
   response.json({ ok: true })
 })
 

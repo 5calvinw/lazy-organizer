@@ -7,6 +7,7 @@ import {
   checklistJson,
   eventJson,
   getCardSummary,
+  deleteCard,
   moveCard,
   nextCardPosition,
   nextChecklistPosition,
@@ -166,8 +167,7 @@ export function createOrganizerMcpServer(db) {
     inputSchema: { card_id: id },
     annotations: { destructiveHint: true },
   }, tool(async ({ card_id }) => {
-    const deleted = await db.card.deleteMany({ where: { id: card_id } })
-    if (!deleted.count) throw new Error('card not found')
+    if (!await deleteCard(db, card_id)) throw new Error('card not found')
     return { ok: true }
   }))
 
